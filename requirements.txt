@@ -1,0 +1,7 @@
+python-dotenv
+requests
+chromadb >= 0.4.22 # Or later version supporting OllamaEmbeddingFunction well
+ollama >= 0.1.7   # Or later version
+beautifulsoup4 >= 4.9.0
+PyMuPDF >= 1.23.0
+gradio >= 4.0.0
