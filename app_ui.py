@@ -20,50 +20,69 @@ import chromadb
 
 # --- Logging Setup ---
 import logging
+# Configure root logger (adjust level and format as needed)
 logging.basicConfig(
     level=config.LOG_LEVEL,
     format='[%(asctime)s] [%(levelname)s][%(name)s] %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
-log = logging.getLogger("AppUI")
+log = logging.getLogger("AppUI") # Logger for this UI script
 
 # --- Global Variables / Setup ---
+# Initialize components needed for the UI and Agent Interaction
 log.info("Initializing components for Gradio App...")
 agent_instance: Optional[AutonomousAgent] = None
 try:
     mem_collection = setup_chromadb()
     if mem_collection is None: raise RuntimeError("Database setup failed.")
+    # Instantiate the agent - it holds the core logic and components
     agent_instance = AutonomousAgent(memory_collection=mem_collection)
     log.info("App components initialized successfully.")
 except Exception as e:
     log.critical(f"Fatal error during App component initialization: {e}", exc_info=True)
+    # Display error prominently if possible, or exit
+    print(f"\n\nFATAL ERROR: Could not initialize agent components: {e}\n", file=sys.stderr)
+    # Set agent_instance to None so UI can show error state
     agent_instance = None
 
 
 # --- Helper Functions ---
-# (format_memories_for_display - unchanged)
 def format_memories_for_display(memories: List[Dict[str, Any]]) -> str:
-    if not memories: return "No relevant memories found."
-    output = "🧠 **Recent/Relevant Memories:**\n\n"; i = 0
-    for mem in memories[:5]:
+    """Formats retrieved memories into a readable markdown string for UI panels."""
+    if not memories:
+        return "No relevant memories found."
+    output = "🧠 **Recent/Relevant Memories:**\n\n"
+    for i, mem in enumerate(memories[:5]): # Limit display
         content_snippet = mem.get('content', 'N/A').replace('\n', ' ')[:150]
         meta_type = mem.get('metadata', {}).get('type', 'memory')
         dist_str = f"{mem.get('distance', -1.0):.3f}" if mem.get('distance') is not None else "N/A"
-        output += f"**{i+1}. Type:** {meta_type} (Dist: {dist_str})\n"; output += f"   Content: _{content_snippet}..._\n\n"; i+=1
+        output += f"**{i+1}. Type:** {meta_type} (Dist: {dist_str})\n"
+        output += f"   Content: _{content_snippet}..._\n\n"
     return output
 
 # --- Functions for Monitor Tab ---
-# (start_agent_processing, pause_agent_processing - unchanged)
 def start_agent_processing():
-    if agent_instance: log.info("UI triggered: Start/Resume Agent Processing"); agent_instance.start_autonomous_loop(); return "Agent loop started/resumed."
-    else: log.error("UI trigger failed: Agent not initialized."); return "ERROR: Agent not initialized."
+    """Called by Gradio button to start/resume the background loop."""
+    if agent_instance:
+        log.info("UI triggered: Start/Resume Agent Processing")
+        agent_instance.start_autonomous_loop()
+        return "Agent loop started/resumed."
+    else:
+        log.error("UI trigger failed: Agent not initialized.")
+        return "ERROR: Agent not initialized."
+
 def pause_agent_processing():
-    if agent_instance: log.info("UI triggered: Pause Agent Processing"); agent_instance.pause_autonomous_loop(); return "Agent loop pause requested."
-    else: log.error("UI trigger failed: Agent not initialized."); return "ERROR: Agent not initialized."
+    """Called by Gradio button to pause the background loop."""
+    if agent_instance:
+        log.info("UI triggered: Pause Agent Processing")
+        agent_instance.pause_autonomous_loop()
+        return "Agent loop pause requested."
+    else:
+        log.error("UI trigger failed: Agent not initialized.")
+        return "ERROR: Agent not initialized."
 
-
-# --- Function to update Monitor UI (returns tuple, ADDED final_answer output) ---
-def update_monitor_ui() -> Tuple[str, str, str, str, str, str]: # Added one more string for final answer
+# --- Function to update Monitor UI (returns tuple) ---
+def update_monitor_ui() -> Tuple[str, str, str, str, str, str]: # Added final_answer output
     """
     Called periodically by Gradio timer. Fetches agent state and returns
     updates for multiple components as a tuple matching the 'outputs' list order.
@@ -78,40 +97,54 @@ def update_monitor_ui() -> Tuple[str, str, str, str, str, str]: # Added one more
         return current_task_display, step_log_output, memory_display, web_content_display, status_bar_text, final_answer_display # Return defaults
 
     try:
-        ui_state = agent_instance.get_ui_update_state()
+        ui_state = agent_instance.get_ui_update_state() # Get state dict
 
         # Safely extract data
-        current_task_id = ui_state.get('current_task_id', 'None'); task_status = ui_state.get('status', 'unknown')
-        current_task_desc = ui_state.get('current_task_desc', 'N/A'); step_log_output = ui_state.get('log', '(No recent log)')
-        recent_memories = ui_state.get('recent_memories', []); last_browse_content = ui_state.get('last_web_content', '(No recent web browse)')
+        current_task_id = ui_state.get('current_task_id', 'None')
+        task_status = ui_state.get('status', 'unknown')
+        current_task_desc = ui_state.get('current_task_desc', 'N/A')
+        step_log_output = ui_state.get('log', '(No recent log)')
+        recent_memories = ui_state.get('recent_memories', [])
+        last_browse_content = ui_state.get('last_web_content', '(No recent web browse)')
         final_answer = ui_state.get('final_answer') # Get the final answer state
 
-        # Format standard UI elements
+        # Format for UI
         current_task_display = f"**ID:** {current_task_id}\n**Status:** {task_status}\n**Desc:** {current_task_desc}"
         memory_display = format_memories_for_display(recent_memories)
+
         web_content_limit = 2000
-        if last_browse_content and len(last_browse_content) > web_content_limit: web_content_display = last_browse_content[:web_content_limit] + "\n\n... (content truncated)"
-        else: web_content_display = last_browse_content
+        if last_browse_content and len(last_browse_content) > web_content_limit:
+            web_content_display = last_browse_content[:web_content_limit] + "\n\n... (content truncated)"
+        else:
+            web_content_display = last_browse_content
+
         status_bar_text = f"Agent Status: {task_status} @ {ui_state.get('timestamp', 'N/A')}"
 
         # Format the final answer display
         if final_answer:
             final_answer_display = final_answer
-            # Optionally clear the state after displaying once?
+            # Optionally clear the state after displaying once? If you want it to disappear after one refresh:
             # agent_instance._update_ui_state(final_answer=None)
-        # else: keep default message
+        # else: keep default message "(No final answer...)"
 
     except Exception as e:
         log.exception("Error in update_monitor_ui")
-        error_msg = f"ERROR updating UI:\n{traceback.format_exc()}"; step_log_output = error_msg
-        status_bar_text = "Error updating UI"; current_task_display = "Error"; memory_display = "Error"; web_content_display = "Error"; final_answer_display = "Error"
+        error_msg = f"ERROR updating UI:\n{traceback.format_exc()}"
+        step_log_output = error_msg # Show error in log box
+        status_bar_text = "Error updating UI"
+        # Keep other fields showing error state? Or use defaults? Let's use defaults.
+        current_task_display = "Error"
+        memory_display = "Error"
+        web_content_display = "Error"
+        final_answer_display = "Error"
 
-    # Return tuple including the final answer
+
+    # Return tuple in the order defined in monitor_outputs list for timer.tick
     return current_task_display, step_log_output, memory_display, web_content_display, status_bar_text, final_answer_display
 
 
 # --- Functions for Chat Tab ---
-# (_should_generate_task, chat_response - unchanged)
+# (_should_generate_task unchanged)
 def _should_generate_task(user_msg: str, assistant_response: str) -> bool:
     if not agent_instance: return False
     log.info("Evaluating if task generation is warranted for chat turn...")
@@ -123,10 +156,11 @@ def _should_generate_task(user_msg: str, assistant_response: str) -> bool:
     log.info(f"Task evaluation result: {'YES' if decision else 'NO'} (Response: '{response}')")
     return decision
 
+# (chat_response unchanged)
 def chat_response(
     message: str,
     history: List[Dict[str, str]],
-) -> Tuple[List[Dict[str, str]], str, str, str]:
+) -> Tuple[List[Dict[str, str]], str, str, str]: # history, memory_panel, task_panel, msg_input
     memory_display_text = "Processing..."; task_display_text = "(No task generated this turn)"
     if not message: return history, "No input provided.", task_display_text, ""
     if not agent_instance: history.append({"role": "user", "content": message}); history.append({"role": "assistant", "content": "**ERROR:** Backend components not initialized."}); return history, "Error: Backend components failed.", task_display_text, ""
@@ -170,8 +204,12 @@ def chat_response(
 log.info("Defining Gradio UI...")
 if agent_instance is None:
      log.critical("Agent instance failed to initialize. Cannot launch UI.")
-     with gr.Blocks() as demo: gr.Markdown("# Fatal Error\nAgent backend failed to initialize. Check logs.")
+     # Define a simple error UI if agent failed
+     with gr.Blocks() as demo:
+          gr.Markdown("# Fatal Error")
+          gr.Markdown("The agent backend failed to initialize. Check logs and configuration then restart the application.")
 else:
+     # Define the main UI if agent is initialized
      with gr.Blocks(theme=gr.themes.Glass(), title="Autonomous Agent Interface") as demo:
         gr.Markdown("# Autonomous Agent Control Center & Chat")
 
@@ -186,61 +224,61 @@ else:
                 with gr.Row():
                     with gr.Column(scale=2):
                         gr.Markdown("### Current Task")
-                        monitor_current_task = gr.Markdown("(Agent Paused)")
+                        monitor_current_task = gr.Markdown("(Agent Paused)") # Define component
                         gr.Markdown("### Last Step Log")
-                        monitor_log = gr.Textbox(label="Log Output", lines=10, interactive=False, autoscroll=True) # Adjusted lines
-                        # --- NEW: Final Answer Panel ---
+                        monitor_log = gr.Textbox(label="Log Output", lines=10, interactive=False, autoscroll=True) # Define component
                         gr.Markdown("### Last Final Answer")
-                        monitor_final_answer = gr.Textbox(label="Final Answer Display", lines=5, interactive=False, show_copy_button=True)
-                        # ------------------------------
+                        monitor_final_answer = gr.Textbox(label="Final Answer Display", lines=5, interactive=False, show_copy_button=True) # Define component
                     with gr.Column(scale=1):
                         gr.Markdown("### Recent Memories")
-                        monitor_memory = gr.Markdown("(Memories will appear here)")
+                        monitor_memory = gr.Markdown("(Memories will appear here)") # Define component
                         gr.Markdown("### Last Web Content")
-                        monitor_web_content = gr.Textbox(label="Last Web Content Fetched", lines=10, interactive=False, show_copy_button=True)
+                        monitor_web_content = gr.Textbox(label="Last Web Content Fetched", lines=10, interactive=False, show_copy_button=True) # Define component
 
-                # Define list of output components including the new one
+                # Define list of output components for the timer tick (ORDER MATTERS!)
                 monitor_outputs = [
                     monitor_current_task,
                     monitor_log,
                     monitor_memory,
                     monitor_web_content,
                     monitor_status_bar,
-                    monitor_final_answer # <<< ADDED final answer component
+                    monitor_final_answer # Must match return order of update_monitor_ui
                 ]
 
-                # Button actions
+                # Button actions - Must be defined AFTER components they output to
                 start_resume_btn.click(fn=start_agent_processing, inputs=None, outputs=monitor_status_bar)
                 pause_btn.click(fn=pause_agent_processing, inputs=None, outputs=monitor_status_bar)
 
                 # Periodic Update using Timer
                 timer = gr.Timer(5) # Define Timer component with 5 sec interval
+                # Link the timer tick to the update function and outputs
                 timer.tick(fn=update_monitor_ui, inputs=None, outputs=monitor_outputs)
 
 
             # --- Chat Tab ---
             with gr.TabItem("Chat"):
-                # ... (Chat Tab UI definition unchanged) ...
-                 gr.Markdown("Interact directly with the agent.")
-                 with gr.Row():
-                     with gr.Column(scale=3):
-                         chat_chatbot = gr.Chatbot(label="Conversation", bubble_full_width=False, height=550, show_copy_button=True, type="messages")
-                         chat_task_panel = gr.Textbox(label="💡 Last Generated Task (Chat)", value="(No task generated yet)", lines=3, interactive=False, show_copy_button=True)
-                         with gr.Row():
-                             chat_msg_input = gr.Textbox(label="Your Message", placeholder="Type message and press Enter or click Send...", lines=3, scale=5, container=False)
-                             chat_send_button = gr.Button("Send", variant="primary", scale=1)
-                     with gr.Column(scale=1):
-                         gr.Markdown("### Relevant Memories (Chat)")
-                         chat_memory_panel = gr.Markdown(value="Memory context will appear here.", label="Memory Context")
+                gr.Markdown("Interact directly with the agent.")
+                with gr.Row():
+                    with gr.Column(scale=3):
+                        chat_chatbot = gr.Chatbot(label="Conversation", bubble_full_width=False, height=550, show_copy_button=True, type="messages")
+                        chat_task_panel = gr.Textbox(label="💡 Last Generated Task (Chat)", value="(No task generated yet)", lines=3, interactive=False, show_copy_button=True)
+                        with gr.Row():
+                            chat_msg_input = gr.Textbox(label="Your Message", placeholder="Type message and press Enter or click Send...", lines=3, scale=5, container=False)
+                            chat_send_button = gr.Button("Send", variant="primary", scale=1)
+                    with gr.Column(scale=1):
+                        gr.Markdown("### Relevant Memories (Chat)")
+                        chat_memory_panel = gr.Markdown(value="Memory context will appear here.", label="Memory Context")
 
-                 chat_inputs = [chat_msg_input, chat_chatbot]
-                 chat_outputs = [chat_chatbot, chat_memory_panel, chat_task_panel, chat_msg_input]
-                 chat_send_button.click(fn=chat_response, inputs=chat_inputs, outputs=chat_outputs, queue=True)
-                 chat_msg_input.submit(fn=chat_response, inputs=chat_inputs, outputs=chat_outputs, queue=True)
+                chat_inputs = [chat_msg_input, chat_chatbot]
+                chat_outputs = [chat_chatbot, chat_memory_panel, chat_task_panel, chat_msg_input]
+                # Link chat events AFTER components are defined
+                chat_send_button.click(fn=chat_response, inputs=chat_inputs, outputs=chat_outputs, queue=True)
+                chat_msg_input.submit(fn=chat_response, inputs=chat_inputs, outputs=chat_outputs, queue=True)
 
 
 # --- Launch the App & Background Thread ---
 if __name__ == "__main__":
+    # Ensure summary directory exists
     try: os.makedirs(config.SUMMARY_FOLDER, exist_ok=True); log.info(f"Summary directory: {config.SUMMARY_FOLDER}")
     except Exception as e: log.error(f"Could not create summary directory {config.SUMMARY_FOLDER}: {e}")
 
@@ -249,30 +287,31 @@ if __name__ == "__main__":
     if agent_instance:
         log.info("Starting agent background processing thread (initially paused)...")
         agent_instance.start_autonomous_loop()
-        agent_instance.pause_autonomous_loop()
+        agent_instance.pause_autonomous_loop() # Start paused
         try:
-            demo.launch(server_name="0.0.0.0", share=False) # This blocks
+            demo.launch(server_name="0.0.0.0", share=False) # This blocks main thread
         except Exception as e:
             log.critical(f"Gradio demo.launch() failed: {e}", exc_info=True)
             log.info("Requesting agent shutdown due to Gradio launch error...")
-            agent_instance.shutdown()
+            agent_instance.shutdown() # Attempt shutdown
             sys.exit("Gradio launch failed.")
     else:
-        log.critical("Agent initialization failed earlier. Cannot launch UI properly.")
-        # Define and launch the minimal error UI if agent_instance is None
-        with gr.Blocks() as error_demo:
-            gr.Markdown("# Fatal Error")
-            gr.Markdown("The agent backend failed to initialize. Check logs and configuration then restart the application.")
+        # If agent init failed, Gradio defined a simple error message block above
+        log.warning("Agent initialization failed. Launching minimal error UI.")
         try:
+            # Need to define the error demo within this block if agent_instance is None
+            with gr.Blocks() as error_demo:
+                 gr.Markdown("# Fatal Error")
+                 gr.Markdown("The agent backend failed to initialize. Check logs and configuration then restart the application.")
             error_demo.launch(server_name="0.0.0.0", share=False)
         except Exception as e:
              log.critical(f"Gradio demo.launch() failed even for error UI: {e}", exc_info=True)
              sys.exit("Gradio launch failed.")
 
 
-    # --- Cleanup (runs when Gradio server is stopped) ---
+    # --- Cleanup (runs when Gradio server is stopped, e.g., Ctrl+C in terminal) ---
     log.info("Gradio App stopped. Requesting agent shutdown...")
     if agent_instance:
         agent_instance.shutdown() # Signal background thread to stop
     log.info("Shutdown complete.")
-    print("\n--- Autonomous Agent App End ---")
+    print("\n--- Autonomous Agent App End ---") # Use print for final exit message
