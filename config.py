@@ -33,17 +33,26 @@ DEFAULT_SESSION_DURATION_MINUTES = int(
     os.environ.get("DEFAULT_SESSION_DURATION_MINUTES", 30)
 )
 CONTEXT_TRUNCATION_LIMIT = int(os.environ.get("CONTEXT_TRUNCATION_LIMIT", 40000))
-MODEL_CONTEXT_LENGTH = CONTEXT_TRUNCATION_LIMIT + 10000
+MODEL_CONTEXT_LENGTH = CONTEXT_TRUNCATION_LIMIT + 10000 # Allow buffer for prompt overhead
+# --- NEW: Error Handling Configuration ---
+AGENT_MAX_STEP_RETRIES = int(os.environ.get("AGENT_MAX_STEP_RETRIES", 2)) # Max retries for a *single step* before failing the task
 
 # --- Summary Configuration ---
 SUMMARY_FOLDER = os.environ.get("SUMMARY_FOLDER", "./output/summary")
 
 # --- NEW: QLoRA Dataset Configuration ---
-QLORA_DATASET_PATH = f"{OUTPUT_FOLDER}/qlora_finetune_data.json"
+QLORA_DATASET_PATH = f"{OUTPUT_FOLDER}/qlora_finetune_data.jsonl" # Changed extension
+
+# --- NEW: Memory Management Configuration ---
+ENABLE_MEMORY_SUMMARIZATION = os.environ.get("ENABLE_MEMORY_SUMMARIZATION", "True").lower() == "true"
+DELETE_MEMORIES_AFTER_SUMMARY = os.environ.get("DELETE_MEMORIES_AFTER_SUMMARY", "True").lower() == "true"
 
 # --- Logging Configuration ---
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 
 print("[CONFIG] Configuration loaded.")
 # (Optionally print other loaded configs)
+print(f"  AGENT_MAX_STEP_RETRIES={AGENT_MAX_STEP_RETRIES}")
+print(f"  ENABLE_MEMORY_SUMMARIZATION={ENABLE_MEMORY_SUMMARIZATION}")
+print(f"  DELETE_MEMORIES_AFTER_SUMMARY={DELETE_MEMORIES_AFTER_SUMMARY}")
 print(f"  QLORA_DATASET_PATH={QLORA_DATASET_PATH}")

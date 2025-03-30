@@ -16,20 +16,24 @@ from config import (
 
 # Suggestion: Use logging module
 import logging
-logging.basicConfig(level=logging.INFO, format='[%(levelname)s][MEMORY] %(message)s')
+logging.basicConfig(level=logging.INFO, format='[%(asctime)s][%(levelname)s][MEMORY] %(message)s')
 log = logging.getLogger(__name__)
 
 
 # --- ChromaDB Setup ---
-# Moved setup into a function to handle potential errors gracefully at startup
 def setup_chromadb() -> Optional[chromadb.Collection]:
     """Initializes ChromaDB client and collection."""
     log.info(f"Initializing ChromaDB client at path: {DB_PATH}")
     try:
-        vector_db = chromadb.PersistentClient(path=DB_PATH)
+        # Explicitly adding setting to potentially mitigate issues on some systems
+        # See: https://docs.trychroma.com/troubleshooting#sqlite
+        settings = chromadb.Settings(anonymized_telemetry=False) # Disable telemetry
+        # settings = chromadb.Settings(allow_reset=True) # Use allow_reset carefully if needed for debugging resets
+        vector_db = chromadb.PersistentClient(path=DB_PATH, settings=settings)
+
         log.info(f"Getting or creating ChromaDB collection '{MEMORY_COLLECTION_NAME}'")
 
-        # Initialize embedding function (error if Ollama URL/model invalid from Chroma's perspective)
+        # Initialize embedding function
         embedding_function = OllamaEmbeddingFunction(
             url=f"{OLLAMA_BASE_URL}/api/embeddings",
             model_name=OLLAMA_EMBED_MODEL
@@ -38,13 +42,14 @@ def setup_chromadb() -> Optional[chromadb.Collection]:
         memory_collection = vector_db.get_or_create_collection(
             name=MEMORY_COLLECTION_NAME,
             embedding_function=embedding_function,
-            metadata={"hnsw:space": "cosine"}
+            metadata={"hnsw:space": "cosine"} # Cosine similarity is often good for embeddings
         )
         log.info("ChromaDB collection ready.")
         return memory_collection
     except Exception as e:
         log.critical(f"Could not initialize ChromaDB at {DB_PATH}.")
-        log.critical(f"  Potential Issues: Ollama server/model, path permissions, DB errors.")
+        log.critical(f"  Potential Issues: Ollama server/model, path permissions, DB state, telemetry conflicts.")
+        log.critical(f"  Ensure '.env' includes 'ANONYMIZED_TELEMETRY=False'")
         log.critical(f"  Error details: {e}", exc_info=True) # Log stack trace
         return None
 
@@ -80,15 +85,25 @@ class AgentMemory:
             log.error(f"  Troubleshoot: Check Ollama server at {OLLAMA_BASE_URL}, model '{self.ollama_embed_model}' availability, content length.")
             return False
 
-    def add_memory(self, content: str, metadata: Optional[Dict[str, Any]] = None):
+    def add_memory(self, content: str, metadata: Optional[Dict[str, Any]] = None) -> Optional[str]:
         """Adds content to ChromaDB after pre-checking embedding generation."""
         if not content or not isinstance(content, str) or not content.strip(): log.warning("Skipped adding empty memory content."); return None
         if not self._test_embedding_generation(content): log.error(f"Embedding pre-check failed. Skipping add to ChromaDB for content: {content[:100]}..."); return None
 
         memory_id = str(uuid.uuid4()); metadata = metadata if isinstance(metadata, dict) else {}; metadata["timestamp"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
         try:
-            # Ensure metadata values are simple types for ChromaDB
-            cleaned_metadata = {k: (str(v) if not isinstance(v, (str, int, float, bool)) else v) for k, v in metadata.items()}
+            # Ensure metadata values are simple types compatible with ChromaDB
+            cleaned_metadata = {}
+            for k, v in metadata.items():
+                if isinstance(v, (str, int, float, bool)):
+                    cleaned_metadata[k] = v
+                elif isinstance(v, list) and all(isinstance(item, (str, int, float, bool)) for item in v):
+                    cleaned_metadata[k] = json.dumps(v) # Store lists as JSON strings if needed by filter
+                else:
+                    # Convert other types to string, log warning
+                    log.debug(f"Converting metadata value '{k}' of type {type(v)} to string.")
+                    cleaned_metadata[k] = str(v)
+
             # Let ChromaDB handle the actual embedding using the configured function
             self.collection.add(documents=[content], metadatas=[cleaned_metadata], ids=[memory_id])
             log.info(f"Memory added: ID {memory_id} (Type: {metadata.get('type', 'N/A')})")
@@ -102,26 +117,91 @@ class AgentMemory:
         if not query or not isinstance(query, str) or not query.strip() or n_results <= 0: return []
         # log.debug(f"Retrieving {n_results} candidates for query: '{query[:50]}...'") # Verbose
         try:
-            # Ensure n_results doesn't exceed the number of items in the collection
             collection_count = self.collection.count()
             actual_n_results = min(n_results, collection_count) if collection_count > 0 else 0
-
-            if actual_n_results == 0:
-                 # log.debug("Collection is empty, returning no candidates.") # Verbose
-                 return []
+            if actual_n_results == 0: return []
 
             results = self.collection.query(query_texts=[query], n_results=actual_n_results, include=['metadatas', 'documents', 'distances'])
             memories = []
-            # Robust check of ChromaDB response structure
-            if results and isinstance(results.get("ids"), list) and results["ids"] and \
-               isinstance(results.get("documents"), list) and results.get("documents") is not None and \
-               isinstance(results.get("metadatas"), list) and results.get("metadatas") is not None and \
-               isinstance(results.get("distances"), list) and results.get("distances") is not None and \
-               len(results["ids"][0]) == len(results["documents"][0]) == len(results["metadatas"][0]) == len(results["distances"][0]):
-                 for i, doc_id in enumerate(results["ids"][0]):
+            # Check response structure defensively
+            if results and all(k in results for k in ['ids', 'documents', 'metadatas', 'distances']) and \
+               isinstance(results['ids'], list) and len(results['ids']) > 0 and \
+               isinstance(results['documents'], list) and len(results['documents']) > 0 and \
+               isinstance(results['metadatas'], list) and len(results['metadatas']) > 0 and \
+               isinstance(results['distances'], list) and len(results['distances']) > 0 and \
+               len(results['ids'][0]) == len(results['documents'][0]) == len(results['metadatas'][0]) == len(results['distances'][0]):
+
+                for i, doc_id in enumerate(results["ids"][0]):
                      doc = results["documents"][0][i]; meta = results["metadatas"][0][i]; dist = results["distances"][0][i]
                      if doc is not None and isinstance(meta, dict) and isinstance(dist, (float, int)):
                          memories.append({"id": doc_id, "content": doc, "metadata": meta, "distance": dist})
+            else:
+                 log.warning(f"Unexpected structure in ChromaDB query results: {results}")
+
             # log.debug(f"Retrieved {len(memories)} raw candidates.") # Verbose
             return memories
         except Exception as e: log.exception(f"Error retrieving raw memories from ChromaDB: {e}"); return [] # Log stack trace
+
+    def get_memories_by_metadata(self, filter_dict: Dict[str, Any], include_vectors: bool = False) -> List[Dict[str, Any]]:
+        """Retrieves memories matching specific metadata filters."""
+        if not filter_dict: log.warning("get_memories_by_metadata called with empty filter."); return []
+        log.debug(f"Getting memories with metadata filter: {filter_dict}")
+        include_fields = ['metadatas', 'documents']
+        if include_vectors: include_fields.append('embeddings')
+
+        try:
+            # Ensure filter values are basic types Chroma expects
+            cleaned_filter = {}
+            for k, v in filter_dict.items():
+                if isinstance(v, (str, int, float, bool)):
+                    cleaned_filter[k] = v
+                else:
+                    log.warning(f"Metadata filter value for '{k}' is not a simple type ({type(v)}). Skipping key.")
+
+            if not cleaned_filter:
+                 log.error("Metadata filter became empty after cleaning. Cannot query.")
+                 return []
+
+            # Using collection.get with a 'where' clause
+            results = self.collection.get(
+                where=cleaned_filter,
+                include=include_fields
+            )
+
+            memories = []
+            if results and results.get('ids'):
+                num_results = len(results['ids'])
+                log.debug(f"Found {num_results} memories matching filter.")
+                for i in range(num_results):
+                    mem_data = {
+                        "id": results['ids'][i],
+                        "content": results['documents'][i] if results.get('documents') else None,
+                        "metadata": results['metadatas'][i] if results.get('metadatas') else None,
+                    }
+                    if include_vectors and results.get('embeddings'):
+                        mem_data["embedding"] = results['embeddings'][i]
+                    memories.append(mem_data)
+            else:
+                log.debug("No memories found matching the metadata filter.")
+            return memories
+        except Exception as e:
+            log.exception(f"Error getting memories by metadata ({filter_dict}): {e}")
+            return []
+
+    def delete_memories(self, memory_ids: List[str]) -> bool:
+        """Deletes memories from the collection by their IDs."""
+        if not memory_ids: log.warning("delete_memories called with empty ID list."); return False
+        log.info(f"Attempting to delete {len(memory_ids)} memories...")
+        try:
+            # Ensure IDs are strings
+            ids_to_delete = [str(mem_id) for mem_id in memory_ids]
+            if not ids_to_delete:
+                log.warning("No valid string IDs found to delete.")
+                return False
+
+            self.collection.delete(ids=ids_to_delete)
+            log.info(f"Successfully deleted {len(ids_to_delete)} memories.")
+            return True
+        except Exception as e:
+            log.exception(f"Error deleting memories from ChromaDB: {e}")
+            return False
