@@ -47,11 +47,19 @@ QLORA_DATASET_PATH = f"{OUTPUT_FOLDER}/qlora_finetune_data.jsonl" # Changed exte
 ENABLE_MEMORY_SUMMARIZATION = os.environ.get("ENABLE_MEMORY_SUMMARIZATION", "True").lower() == "true"
 DELETE_MEMORIES_AFTER_SUMMARY = os.environ.get("DELETE_MEMORIES_AFTER_SUMMARY", "True").lower() == "true"
 
+# --- NEW: Identity Configuration ---
+INITIAL_IDENTITY_STATEMENT = os.environ.get(
+    "INITIAL_IDENTITY_STATEMENT",
+    "I am a helpful and diligent AI assistant designed to process tasks, learn from my experiences, and interact effectively. My goal is to complete assigned objectives efficiently using available tools and knowledge."
+)
+IDENTITY_REVISION_MEMORY_COUNT = int(os.environ.get("IDENTITY_REVISION_MEMORY_COUNT", 15))
+
 # --- Logging Configuration ---
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 
 print("[CONFIG] Configuration loaded.")
 # (Optionally print other loaded configs)
+print(f"  INITIAL_IDENTITY_STATEMENT={INITIAL_IDENTITY_STATEMENT[:100]}...") # Print snippet
 print(f"  AGENT_MAX_STEP_RETRIES={AGENT_MAX_STEP_RETRIES}")
 print(f"  ENABLE_MEMORY_SUMMARIZATION={ENABLE_MEMORY_SUMMARIZATION}")
 print(f"  DELETE_MEMORIES_AFTER_SUMMARY={DELETE_MEMORIES_AFTER_SUMMARY}")

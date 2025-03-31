@@ -1,4 +1,4 @@
-# Modular Autonomous Agent Framework 🧠🤖
+# MindCraft 🧠🤖
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -13,8 +13,8 @@ This project provides a foundation for building autonomous agents that can:
 *   Generate new tasks based on ongoing work or chat interactions.
 *   Interact with users via a **Gradio** web interface.
 *   Generate data suitable for fine-tuning models (**QLoRA format**).
-*   **[NEW]** Employ robust error handling within task steps, including retries for recoverable issues.
-*   **[NEW]** Summarize completed/failed tasks into memory and optionally prune detailed step memories to manage long-term memory growth.
+*   Employ robust error handling within task steps, including retries for recoverable issues.
+*   Summarize completed/failed tasks into memory and optionally prune detailed step memories to manage long-term memory growth.
 
 The agent operates autonomously in the background, processing tasks while providing visibility and control through a web UI.
 
@@ -33,8 +33,9 @@ The agent operates autonomously in the background, processing tasks while provid
     *   Supports task dependencies (tasks wait for prerequisites).
 *   **🤖 Autonomous Operation:** Runs task processing loop in a background thread.
 *   **🌐 Gradio Web Interface:**
-    *   **Monitor Tab:** Visualize the agent's current task, step logs, recently accessed memories, and last browsed web content. Control buttons to Start/Pause the autonomous loop.
+    *   **Monitor Tab:** Visualize the agent's current task, step logs, recently accessed memories, and last browsed web content. Control buttons to Start/Pause the autonomous loop. *Updates automatically while the agent is running.*
     *   **Chat Tab:** Interact directly with the agent. Chat history is saved to memory, and interactions can trigger new task generation. Displays recently generated tasks and relevant memories for the chat context.
+    *   **Agent State Tab:** View the agent's identity statement, task queues (pending, in-progress, completed, failed), memory summary, and explore task-specific or general memories. *Requires manual refresh using the "Load Agent State" button.*
 *   **💡 Reactive Task Generation:** The agent can evaluate chat interactions or its idle state to generate new, relevant tasks (including exploratory ones) with priorities and dependencies.
 *   **📊 QLoRA Dataset Generation:** Automatically saves completed task `(description, final_answer)` pairs and qualifying chat interactions to a `.jsonl` file suitable for fine-tuning.
 *   **📝 Activity Summaries:** Generates daily summary logs (`agent_summaries/summary_YYYY-MM-DD.txt`) for high-level tracking.
@@ -43,9 +44,9 @@ The agent operates autonomously in the background, processing tasks while provid
 
 ## 🏗️ Architecture Overview
 
-The project is structured into several key Python modules within the `autonomous_agent` package:
+The project is structured into several key Python modules:
 
-*   `app_ui.py`: Main entry point, defines the Gradio interface and orchestrates agent startup/shutdown.
+*   `app_ui.py`: Main entry point, defines the Gradio interface and orchestrates agent startup/shutdown. Manages UI updates (timer for Monitor, manual for State).
 *   `agent.py`: Contains the `AutonomousAgent` class, the central orchestrator managing the main loop, state, thinking process, error handling/recovery, memory summarization, and interactions between components.
 *   `memory.py`: Implements the `AgentMemory` class for interacting with ChromaDB, handling embedding pre-checks, and supporting memory retrieval/deletion/metadata queries.
 *   `task_manager.py`: Defines the `TaskQueue` for managing tasks and their persistence.
@@ -70,8 +71,8 @@ The project is structured into several key Python modules within the `autonomous
 
 1.  **Clone the repository:**
     ```bash
-    git clone https://github.com/bowenwen/mindcraft.git
-    cd mindcraft
+    git clone https://github.com/bowenwen/mindcraft.git # Or your repo URL
+    cd mindcraft # Or your project directory
     ```
 2.  **Create a virtual environment (recommended):**
     ```bash
@@ -101,28 +102,44 @@ The project is structured into several key Python modules within the `autonomous
 Run the Gradio application from the root directory of the project:
 
 ```bash
-python -m autonomous_agent.app_ui
+python app_ui.py # Assuming app_ui.py is in the root, adjust if needed
 ```
 
-This will start the background agent thread (initially paused) and launch the Gradio web interface. Open the URL provided in your terminal (usually `http://127.0.0.1:7860` or `http://0.0.0.0:7860`).
+This will start the background agent thread (automatically resume on start) and launch the Gradio web interface. Open the URL provided in your terminal (usually `http://127.0.0.1:7860` or `http://0.0.0.0:7860`).
 
-##  How to use
+## How to use
 
-The Gradio interface has two main tabs:
+The Gradio interface has three main tabs:
 
 1.  **Agent Monitor:**
-    *   **Controls:** Use "Start / Resume" and "Pause" to control the agent's autonomous background task processing.
+    *   **Controls:** Use "Start / Resume" and "Pause" to control the agent's autonomous background task processing. Use "Suggest Task Change" to add a memory hinting the agent should consider wrapping up its current task.
+    *   **Agent Status:** Shows the current state (running, paused, idle, etc.) and timestamp.
     *   **Current Task:** Shows the ID, status, and description of the task the agent is currently focused on (or "Idle").
     *   **Last Step Log:** Displays detailed logs generated during the most recent processing step, including retry attempts if applicable.
     *   **Recent Memories:** Shows a summary of the latest memories retrieved by the agent relevant to its current step (may include `task_summary` types).
     *   **Last Web Content:** Displays the text content fetched by the last `web_browse` tool execution.
+    *   **Last Final Answer:** Displays the final answer provided by the agent for the most recently completed task.
+    *   ***This tab updates automatically every few seconds while the agent is running.***
+
 2.  **Chat:**
     *   **Conversation:** Interact directly with the agent using natural language.
     *   **Relevant Memories (Chat):** Shows memories retrieved specifically for the context of the current chat turn.
-    *   **Last Generated Task (Chat):** If your chat interaction warrants a background task, its description will appear here.
-    *   Chat history is added to the agent's long-term memory.
+    *   **Last Generated Task (Chat):** If your chat interaction warrants a background task, its description and ID will appear here.
+    *   **Prioritize Task:** If a task was just generated, click this to increase its priority in the queue.
+    *   **Inject Info for Task:** Type information in the main message box and click this button to add it to memory for the agent's *current* task context.
+    *   Chat history is added to the agent's long-term memory (if the agent is running).
     *   Chat interactions deemed sufficiently complex trigger background task generation.
     *   Interactions leading to task generation are saved to the QLoRA dataset file.
+
+3.  **Agent State:**
+    *   **Controls:** Use the **"Load Agent State"** button to refresh all information on this tab. Use the "Refresh General Memories" button specifically for that table.
+    *   **Agent Identity Statement:** Displays the agent's current self-defined identity.
+    *   **Task Status:** Shows tables for Pending, In Progress, Completed, and Failed tasks with relevant details.
+    *   **Memory Explorer:**
+        *   Displays a summary count of memories by type.
+        *   Allows selecting a completed/failed task ID from a dropdown to view its specific memories.
+        *   Shows a table of recent general memories (not tied to specific tasks, like chat or reflections).
+    *   ***This tab requires clicking the "Load Agent State" button to see the latest information.***
 
 ## ⚙️ Configuration
 
@@ -150,7 +167,7 @@ Key settings are managed via the `.env` file. See `config.py` for all available 
 *   [ ] Refine QLoRA data generation format and options.
 *   [ ] Implement periodic pruning of *old, low-relevance* memories (independent of task summarization).
 *   [ ] Integrate Python's `logging` module more deeply for configurable log levels, file output rotation, etc.
-*   [ ] Improve Gradio UI feedback (e.g., show retry counts, memory summary status).
+*   [ ] Improve Gradio UI feedback (e.g., show retry counts, memory summary status, loading indicators).
 
 ## 🙏 Contributing
 
