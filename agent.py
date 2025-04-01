@@ -613,9 +613,10 @@ REFLECTIONS: <Optional thoughts.>
         log.info("Background agent loop starting."); time.sleep(initial_delay)
         while not self._shutdown_request.is_set():
             if not self._is_running.is_set():
+                # if agent is paused, sleep every 1 second and check for resume
                 with self._state_lock:
                     if self._ui_update_state["status"] != "paused": log.info("Agent loop pausing..."); self._ui_update_state["status"] = "paused"; self._ui_update_state["log"] = "Agent loop paused."
-                time.sleep(1); continue
+                time.sleep(1); continue  #; self._is_running.wait()
             log.debug("Autonomous loop: Processing step...")
             step_start = time.monotonic()
             try: self.process_one_step()
@@ -633,8 +634,9 @@ REFLECTIONS: <Optional thoughts.>
             self._agent_thread = threading.Thread(target=self._autonomous_loop, daemon=True); self._agent_thread.start()
 
     def pause_autonomous_loop(self): # Unchanged
-        # ... (implementation unchanged) ...
-        if self._is_running.is_set(): log.info("Pausing agent loop..."); self._is_running.clear(); self._ui_update_state["status"] = "paused"; self._is_running.wait()
+        # if not paused, set status to pausing and trigger threading event for _is_running
+        if self._is_running.is_set(): log.info("Pausing agent loop..."); self._is_running.clear(); self._update_ui_state(status="paused", log="Agent loop paused.")
+            # wait should then happen within autonomous loop after determining thread is not set
         else: log.info("Agent loop is already paused.")
 
     def shutdown(self): # Unchanged

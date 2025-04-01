@@ -45,7 +45,7 @@ initial_status_text = "Error: Agent not initialized."
 if agent_instance:
     log.info("Setting initial agent state to paused for UI...")
     agent_instance.start_autonomous_loop()
-    # agent_instance.pause_autonomous_loop() # Agent now starts paused by default
+    agent_instance.pause_autonomous_loop() # Agent now starts paused by default
     initial_state = agent_instance.get_ui_update_state()
     initial_status_text = f"Agent Status: {initial_state.get('status', 'paused')} @ {initial_state.get('timestamp', 'N/A')}"
     log.info(f"Calculated initial status text for UI: {initial_status_text}")
@@ -489,7 +489,7 @@ else:
                 )
 
         # --- Global Timer (Only for Monitor Tab) ---
-        timer = gr.Timer(5) # Update interval
+        timer = gr.Timer(0.5) # Update interval
 
         # --- MODIFIED: Update Function ONLY for Monitor Tab ---
         def update_monitor_and_feedback():
@@ -510,21 +510,14 @@ else:
             monitor_updates_to_return = last_monitor_state
             suggestion_feedback_clear = "" # Always clear this temporary feedback
 
-            # --- Update Monitor if agent is running ---
-            if agent_instance and agent_instance._is_running.is_set():
-                log.debug("Agent running, updating Monitor tab...")
-                try:
-                    current_monitor_state = update_monitor_ui()
-                    last_monitor_state = current_monitor_state # Store
-                    monitor_updates_to_return = current_monitor_state # Use fresh
-                except Exception as e:
-                    log.exception("Error during monitor update (running)")
-                    # Fallback: monitor_updates_to_return remains last_monitor_state
-            else:
-                # Agent is paused: Log that we are using stored state for Monitor
-                if agent_instance: # Avoid logging if agent never initialized
-                     log.debug("Agent paused, returning last known Monitor tab state.")
-                # Defaults (last known state) are used
+            log.debug("Agent running, updating Monitor tab...")
+            try:
+                current_monitor_state = update_monitor_ui()
+                last_monitor_state = current_monitor_state # Store
+                monitor_updates_to_return = current_monitor_state # Use fresh
+            except Exception as e:
+                log.exception("Error during monitor update (running)")
+                # Fallback: monitor_updates_to_return remains last_monitor_state
 
             # --- Final Assembly & Checks ---
             expected_len = len(monitor_outputs_with_feedback) # Now 7 elements

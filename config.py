@@ -45,7 +45,7 @@ QLORA_DATASET_PATH = f"{OUTPUT_FOLDER}/qlora_finetune_data.jsonl" # Changed exte
 
 # --- NEW: Memory Management Configuration ---
 ENABLE_MEMORY_SUMMARIZATION = os.environ.get("ENABLE_MEMORY_SUMMARIZATION", "True").lower() == "true"
-DELETE_MEMORIES_AFTER_SUMMARY = os.environ.get("DELETE_MEMORIES_AFTER_SUMMARY", "True").lower() == "true"
+DELETE_MEMORIES_AFTER_SUMMARY = os.environ.get("DELETE_MEMORIES_AFTER_SUMMARY", "True").lower() == "false"
 
 # --- NEW: Identity Configuration ---
 INITIAL_IDENTITY_STATEMENT = os.environ.get(
