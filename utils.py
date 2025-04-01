@@ -1,6 +1,7 @@
 # autonomous_agent/llm_utils.py
 import requests
 import time
+import datetime
 import json
 from typing import Optional, List, Dict, Any
 
@@ -72,3 +73,54 @@ def call_ollama_api(
             )  # Logs stack trace
             return None
     return None  # Should only be reached if retries fail
+
+
+# --- NEW: Relative Time Formatting Utility ---
+def format_relative_time(timestamp_str: Optional[str]) -> str:
+    """Converts an ISO timestamp string into a user-friendly relative time string."""
+    if not timestamp_str:
+        return "Time N/A"
+    try:
+        # Attempt to parse, handling potential 'Z' for UTC timezone
+        if timestamp_str.endswith('Z'):
+            timestamp_str = timestamp_str[:-1] + '+00:00'
+        event_time = datetime.datetime.fromisoformat(timestamp_str).replace(tzinfo=datetime.timezone.utc)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        delta = now - event_time
+
+        seconds = delta.total_seconds()
+        if seconds < 0:
+            return "in future?" # Should not happen for memories
+        elif seconds < 60:
+            return "<1 min ago"
+        elif seconds < 3600:
+            minutes = int(seconds / 60)
+            return f"{minutes} min{'s' if minutes > 1 else ''} ago"
+        elif seconds < 86400:
+            hours = int(seconds / 3600)
+            return f"{hours} hour{'s' if hours > 1 else ''} ago"
+        elif seconds < 172800: # Less than 2 days
+            # Check if it was actually yesterday
+            if (now.date() - event_time.date()).days == 1:
+                 return "yesterday"
+            else:
+                 return "1 day ago" # Could be same day if time crosses midnight UTC vs local
+        elif seconds < 604800: # Less than 7 days
+            days = int(seconds / 86400)
+            return f"{days} days ago"
+        elif seconds < 1209600: # Less than 14 days
+            return "last week"
+        elif seconds < 2592000: # Approx 30 days
+             weeks = int(seconds / 604800)
+             return f"{weeks} week{'s' if weeks > 1 else ''} ago"
+        elif seconds < 5184000: # Approx 60 days
+             return "1 month ago"
+        else:
+            return ">1 month ago"
+
+    except ValueError:
+        log.warning(f"Could not parse timestamp for relative time: {timestamp_str}")
+        return "Invalid Time"
+    except Exception as e:
+        log.error(f"Error formatting relative time for {timestamp_str}: {e}")
+        return "Time Error"
