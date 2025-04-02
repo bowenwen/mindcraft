@@ -66,7 +66,7 @@ Summarize the execution of this agent task based on the log below. Focus on obje
 #            {completed_failed_summary}, {critical_evaluation_instruction}, {max_new_tasks}
 # CORRECTED: Use single braces for .format() substitution
 GENERATE_NEW_TASKS_PROMPT = """
-You are the planning component of an AI agent. Generate new, actionable tasks based on state, history, and identity.
+You are the planning component of an agent. Generate new, actionable tasks based on state, history, and identity.
 
 **Agent's Current Identity:**
 {identity_statement}

@@ -903,7 +903,7 @@ REFLECTIONS: <Optional thoughts.>
                     # Idle task generation logic
                     if not self.session_state.get("current_task_id"): # Redundant check, but safe
                         log.info("Agent idle, considering generating tasks...");
-                        generated_desc = self.generate_new_tasks(max_new_tasks=1)
+                        generated_desc = self.generate_new_tasks(max_new_tasks=3)
                         if generated_desc: step_result_log.append(f"Generated idle task: {generated_desc[:60]}...")
                         else: step_result_log.append("No new idle tasks generated.")
 
