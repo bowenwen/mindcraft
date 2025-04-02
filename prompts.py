@@ -65,37 +65,71 @@ Summarize the execution of this agent task based on the log below. Focus on obje
 # Variables: {identity_statement}, {context_query}, {mem_summary}, {active_tasks_summary},
 #            {completed_failed_summary}, {critical_evaluation_instruction}, {max_new_tasks}
 # CORRECTED: Use single braces for .format() substitution
+# REVISED: Added more diverse examples and explicit instructions for follow-up/variety.
 GENERATE_NEW_TASKS_PROMPT = """
-You are the planning component of an agent. Generate new, actionable tasks based on state, history, and identity.
+You are the planning component of an AI agent ({identity_statement}). Your role is to generate new, actionable tasks based on the agent's state, history, identity, and the immediate context.
 
 **Agent's Current Identity:**
 {identity_statement}
 
-**Current Context Focus:**
+**Current Context Focus (Why are we generating tasks now?):**
 {context_query}
 
-**Recent Activity & Memory Snippets (Consider recency indicated by '[X time ago]'):**
+**Recent Activity & Memory Snippets (Consider recency indicated by '[X time ago]' and task outcomes):**
 {mem_summary}
 
-**Existing Pending/In-Progress Tasks (Check duplicates!):**
+**Existing Pending/In-Progress Tasks (CRITICAL: Check for duplicates or closely related tasks!):**
 {active_tasks_summary}
 
-**Recently Finished Tasks (for context):**
+**Recently Finished Tasks (Consider for follow-up actions):**
 {completed_failed_summary}
 
 {critical_evaluation_instruction}
 
-**Your Task:** Review all info (paying attention to recency of memories). Identify gaps/next steps relevant to Context & Identity. Generate up to {max_new_tasks} new, specific, actionable tasks that require using the agent's tools (web search/browse, memory search/write, file read/write/list, status report). AVOID DUPLICATES of pending/in-progress tasks. Assign priority (1-10, consider identity). Add necessary `depends_on` using existing IDs only. Suggest follow-up, refinement, or (max 1) exploratory tasks.
+**Your Task:** Review ALL provided information. Based on the **Current Context Focus**, **Identity**, and **Recent Activity/History** (especially completed/failed tasks), identify potential gaps, logical next steps, or relevant new explorations. Generate up to {max_new_tasks} new, specific, actionable tasks.
 
-**Guidelines:** Actionable (verb start, often implying tool use), Specific, Novel, Relevant (to context/identity), Concise.
+**Task Generation Goals:**
+1.  **Continuity:** Prioritize generating follow-up tasks that logically continue or refine work from recently completed/failed tasks or address the specific **Context Focus** (e.g., if context is a user chat, address their request). Break down larger goals implied by the context or previous tasks into smaller, manageable steps with dependencies.
+2.  **Diversity:** Explore the full range of the agent's capabilities. Consider tasks involving:
+    *   **Deep Research:** Investigate specific scientific, technical, or historical topics using web search/browse.
+    *   **Learning & Synthesis:** Learn about a concept/event using web tools and *write* a summary or key facts to memory using the `memory` tool.
+    *   **Monitoring:** Track recent news or developments on a specific subject.
+    *   **Creative Work:** Write stories, code, plans, or reports and save them to files using the `file` tool.
+    *   **Analysis:** Read data from files (`file` read) and perform analysis, potentially writing results to another file or memory.
+    *   **Self-Improvement:** Reflect on recent errors or challenges and write insights to memory.
+    *   **Maintenance:** Check agent status using the `status` tool.
+3.  **Actionability:** Tasks should have clear objectives and imply the use of the agent's tools (`web`, `memory`, `file`, `status`). Start descriptions with verbs.
+4.  **Specificity & Conciseness:** Tasks should be clearly defined but not overly long.
+5.  **Novelty:** AVOID generating tasks that are exact duplicates or functionally identical to existing pending/in-progress tasks. Check the list carefully.
+6.  **Prioritization:** Assign a priority (1-10, higher is more urgent) based on relevance to the context, identity, and potential dependencies.
+7.  **Dependencies:** If a new task logically requires another task (existing or generated in this batch) to be completed first, add its ID to the `depends_on` list (use existing valid IDs only).
 
-**Output Format (Strict JSON):** Provide *only* a valid JSON list of objects (or `[]`). Example:
+**Output Format (Strict JSON):** Provide *only* a valid JSON list of task objects (or `[]` if no tasks are needed). The `description` should clearly state the goal.
+
+**Example (Illustrating Diversity and Dependencies):**
 ```json
 [
-  {{"description": "Search the web for recent news on AI agent memory techniques.", "priority": 7}},
-  {{"description": "Read the contents of the 'summary.txt' artifact.", "priority": 6, "depends_on": ["xyz"]}},
-  {{"description": "Write a brief reflection on the challenges encountered in task [abc] to memory.", "priority": 4, "depends_on": ["abc"]}},
-  {{"description": "Get the current agent status report.", "priority": 2}}
+  {{
+    "description": "Research the latest advancements in tokamak fusion energy using web search.",
+    "priority": 8
+  }},
+  {{
+    "description": "Summarize the key findings from the fusion energy research and write them to memory.",
+    "priority": 7,
+    "depends_on": ["<ID_of_fusion_research_task_above>"]
+  }},
+  {{
+    "description": "Write a short fictional story about a journey to Mars and save it as 'mars_story_chapter1.txt'.",
+    "priority": 5
+  }},
+  {{
+    "description": "List the contents of the project's main artifact directory.",
+    "priority": 3
+  }},
+  {{
+    "description": "Write Python code to calculate Fibonacci numbers up to N=50 and save it to 'fibonacci.py'.",
+    "priority": 6
+  }}
 ]
 ```
 """
