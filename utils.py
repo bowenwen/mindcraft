@@ -1,12 +1,18 @@
 # autonomous_agent/llm_utils.py
+import os
 import requests
 import time
 import datetime
 import json
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Tuple
 
 # Import specific config values needed
-from config import OLLAMA_BASE_URL, OLLAMA_TIMEOUT, MODEL_CONTEXT_LENGTH
+from config import (
+    OLLAMA_BASE_URL,
+    OLLAMA_TIMEOUT,
+    MODEL_CONTEXT_LENGTH,
+    ARTIFACT_FOLDER,
+)
 
 # Suggestion: Consider adding basic logging setup here or importing from a dedicated logging module
 import logging
@@ -32,7 +38,6 @@ def call_ollama_api(
     headers = {"Content-Type": "application/json"}
     max_retries = 1
     retry_delay = 3
-    # log.debug(f"Sending request to Ollama ({model}). Prompt snippet: {prompt[:100]}...") # Use logger
 
     for attempt in range(max_retries + 1):
         try:
@@ -42,7 +47,6 @@ def call_ollama_api(
             response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
             response_data = response.json()
             if "message" in response_data and "content" in response_data["message"]:
-                # log.debug(f"Received response from Ollama ({model}).") # Use logger
                 return response_data["message"]["content"]
             elif "error" in response_data:
                 log.error(f"Error from Ollama API ({model}): {response_data['error']}")
@@ -68,29 +72,28 @@ def call_ollama_api(
                 )
             return None
         except Exception as e:
-            log.exception(
-                f"Unexpected error calling Ollama ({model}): {e}"
-            )  # Logs stack trace
+            log.exception(f"Unexpected error calling Ollama ({model}): {e}")
             return None
-    return None  # Should only be reached if retries fail
+    return None
 
 
-# --- NEW: Relative Time Formatting Utility ---
 def format_relative_time(timestamp_str: Optional[str]) -> str:
     """Converts an ISO timestamp string into a user-friendly relative time string."""
     if not timestamp_str:
         return "Time N/A"
     try:
-        # Attempt to parse, handling potential 'Z' for UTC timezone
-        if timestamp_str.endswith('Z'):
-            timestamp_str = timestamp_str[:-1] + '+00:00'
-        event_time = datetime.datetime.fromisoformat(timestamp_str).replace(tzinfo=datetime.timezone.utc)
+        # Handle potential 'Z' for UTC timezone
+        if timestamp_str.endswith("Z"):
+            timestamp_str = timestamp_str[:-1] + "+00:00"
+        event_time = datetime.datetime.fromisoformat(timestamp_str).replace(
+            tzinfo=datetime.timezone.utc
+        )
         now = datetime.datetime.now(datetime.timezone.utc)
         delta = now - event_time
 
         seconds = delta.total_seconds()
         if seconds < 0:
-            return "in future?" # Should not happen for memories
+            return "in future?"  # Should not happen for memories
         elif seconds < 60:
             return "<1 min ago"
         elif seconds < 3600:
@@ -99,22 +102,21 @@ def format_relative_time(timestamp_str: Optional[str]) -> str:
         elif seconds < 86400:
             hours = int(seconds / 3600)
             return f"{hours} hour{'s' if hours > 1 else ''} ago"
-        elif seconds < 172800: # Less than 2 days
-            # Check if it was actually yesterday
+        elif seconds < 172800:  # Less than 2 days
             if (now.date() - event_time.date()).days == 1:
-                 return "yesterday"
+                return "yesterday"
             else:
-                 return "1 day ago" # Could be same day if time crosses midnight UTC vs local
-        elif seconds < 604800: # Less than 7 days
+                return "1 day ago"  # Could be same day if time crosses midnight UTC vs local
+        elif seconds < 604800:  # Less than 7 days
             days = int(seconds / 86400)
             return f"{days} days ago"
-        elif seconds < 1209600: # Less than 14 days
+        elif seconds < 1209600:  # Less than 14 days
             return "last week"
-        elif seconds < 2592000: # Approx 30 days
-             weeks = int(seconds / 604800)
-             return f"{weeks} week{'s' if weeks > 1 else ''} ago"
-        elif seconds < 5184000: # Approx 60 days
-             return "1 month ago"
+        elif seconds < 2592000:  # Approx 30 days
+            weeks = int(seconds / 604800)
+            return f"{weeks} week{'s' if weeks > 1 else ''} ago"
+        elif seconds < 5184000:  # Approx 60 days
+            return "1 month ago"
         else:
             return ">1 month ago"
 
@@ -124,3 +126,81 @@ def format_relative_time(timestamp_str: Optional[str]) -> str:
     except Exception as e:
         log.error(f"Error formatting relative time for {timestamp_str}: {e}")
         return "Time Error"
+
+
+# New shared utility functions moved from artifact_reader.py and artifact_writer.py
+def sanitize_and_validate_path(
+    filename: str, base_artifact_path: str
+) -> Tuple[bool, str, Optional[str]]:
+    """Sanitizes the filename and validates that it points to a path within the artifact workspace."""
+    try:
+        # Normalize the received filename and join with the base artifact folder path
+        normalized_filename = os.path.normpath(filename).lstrip(os.sep)
+        joined_path = os.path.join(base_artifact_path, normalized_filename)
+
+        # Resolve the full absolute path to ensure no directory traversal attacks can occur
+        normalized_joined_path = os.path.normpath(joined_path)
+        if not normalized_joined_path.startswith(os.path.normpath(base_artifact_path)):
+            return (
+                False,
+                "Path validation failed: Attempted access outside of designated workspace.",
+                None,
+            )
+
+        full_path = os.path.abspath(normalized_joined_path)
+
+    except Exception as e:
+        log.error(f"Error resolving path for '{filename}': {e}")
+        return False, f"Internal error resolving path: {e}", None
+
+    # Ensure the final path is within the artifact folder
+    normalized_base_path = os.path.normpath(base_artifact_path)
+    if not (
+        full_path.startswith(normalized_base_path + os.sep)
+        or full_path == normalized_base_path
+    ):
+        log.warning(
+            f"Path validation failed: Resolved path '{full_path}' is outside artifact folder '{normalized_base_path}'"
+        )
+        return (
+            False,
+            "Path validation failed: Attempted access outside of designated workspace.",
+            None,
+        )
+
+    max_path_len = 255
+    if len(full_path) > max_path_len:
+        return False, f"Resulting file path is too long (>{max_path_len} chars).", None
+
+    log.debug(f"Path validated: '{filename}' -> '{full_path}'")
+    return True, "Path validated successfully.", full_path, normalized_filename
+
+
+def list_directory_contents(directory_path: str) -> Tuple[bool, List[str]]:
+    """Safely lists contents of a directory within the artifact workspace."""
+    try:
+        base_artifact_path = os.path.abspath(ARTIFACT_FOLDER)
+        abs_directory_path = os.path.abspath(directory_path)
+
+        # Final safety check: ensure the directory itself is within the workspace
+        if not abs_directory_path.startswith(base_artifact_path):
+            log.error(
+                f"Security Error: Attempted to list directory outside workspace: {abs_directory_path}"
+            )
+            return False, []  # Return empty list on security violation
+
+        if not os.path.isdir(abs_directory_path):
+            log.warning(
+                f"Cannot list contents, path is not a directory: {abs_directory_path}"
+            )
+            return False, []  # Not a directory, can't list
+
+        contents = os.listdir(abs_directory_path)
+        log.info(f"Listed {len(contents)} items in directory: {abs_directory_path}")
+        return True, contents
+    except OSError as e:
+        log.error(f"OS error listing directory '{directory_path}': {e}")
+        return False, []
+    except Exception as e:
+        log.exception(f"Unexpected error listing directory '{directory_path}': {e}")
+        return False, []

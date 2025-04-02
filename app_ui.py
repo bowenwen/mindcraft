@@ -292,10 +292,8 @@ def inject_chat_info(
 def chat_response(
     message: str,
     history: List[Dict[str, str]],
-) -> Tuple[
-    List[Dict[str, str]], str, str, str, Optional[str]
-]:  # Logic unchanged, uses updated helper
-    # ... (implementation unchanged except for call to format_memories_for_display) ...
+) -> Tuple[List[Dict[str, str]], str, str, str, Optional[str]]:
+    # ... (most implementation unchanged, only memory formatting for prompt modified) ...
     memory_display_text = "Processing..."
     task_display_text = "(No task generated this turn)"
     last_gen_id = None
@@ -347,26 +345,34 @@ def chat_response(
             task_description="Responding in chat, considering identity/activity.",
             context=f"{history_context_str}\nActivity: {agent_activity_context}\nIdentity: {agent_identity}",
             identity_statement=agent_instance.identity_statement,  # <<<--- PASS IDENTITY
-            n_results=25,
-            n_final=10,
+            n_results=config.MEMORY_COUNT_CHAT_RESPONSE * 2,
+            n_final=config.MEMORY_COUNT_CHAT_RESPONSE,  # Retrieve up to 10 memories for context
         )
-        # --- Uses updated formatter ---
+        # --- Uses updated formatter for the UI panel ---
         memory_display_text = format_memories_for_display(
             relevant_memories, context_label="Chat"
         )
         log.info(f"Retrieved {len(relevant_memories)} memories for chat.")
         system_prompt = f"""You are helpful AI assistant ({agent_identity}). Answer user conversationally. Consider identity, chat history, memories, agent's background activity. Be aware of your capabilities and limitations."""
-        # --- Format memories for prompt using relative time ---
+
+        # --- *** MODIFIED: Use memory SNIPPETS in prompt *** ---
         memories_for_prompt_list = []
-        for mem in relevant_memories:
+        snippet_length = 250  # Max length for each memory snippet in the prompt
+        for mem in relevant_memories:  # Use the retrieved memories
             relative_time = format_relative_time(
                 mem.get("metadata", {}).get("timestamp")
             )
             mem_type = mem.get("metadata", {}).get("type", "N/A")
+            content_snippet = mem.get("content", "")
+            if len(content_snippet) > snippet_length:
+                content_snippet = content_snippet[:snippet_length].strip() + "..."
+            else:
+                content_snippet = content_snippet.strip()
             memories_for_prompt_list.append(
-                f"- [Memory - {relative_time}] (Type: {mem_type}): {mem['content']}"
+                f"- [Memory - {relative_time}] (Type: {mem_type}): {content_snippet}"
             )
         memories_for_prompt = "\n".join(memories_for_prompt_list) or "None provided."
+        # --- *** END MODIFICATION *** ---
 
         history_for_prompt = "\n".join(
             [
@@ -374,17 +380,25 @@ def chat_response(
                 for t in history
             ]
         )
-        prompt = f"{system_prompt}\n\n## Agent Background Activity:\n{agent_activity_context}\n\n## Relevant Memories:\n{memories_for_prompt}\n\n## Chat History:\n{history_for_prompt}\n\n## Current Query:\nUser: {message}\nAssistant:"
+        prompt = f"{system_prompt}\n\n## Agent Background Activity:\n{agent_activity_context}\n\n## Relevant Memory Snippets:\n{memories_for_prompt}\n\n## Chat History:\n{history_for_prompt}\n\n## Current Query:\nUser: {message}\nAssistant:"
+
+        # --- Debugging: Log the approximate prompt length ---
+        log.debug(f"Approximate prompt length for chat response: {len(prompt)} chars")
+
         log.info(f"Asking {config.OLLAMA_CHAT_MODEL} for chat response...")
         response_text = call_ollama_api(
             prompt=prompt,
             model=config.OLLAMA_CHAT_MODEL,
             base_url=config.OLLAMA_BASE_URL,
-            timeout=config.OLLAMA_TIMEOUT,
+            timeout=config.OLLAMA_TIMEOUT,  # Use configured timeout
         )
         if not response_text:
-            response_text = "Sorry, error generating response."
-            log.error("LLM call failed chat.")
+            response_text = (
+                "Sorry, error generating response."  # This is the fallback users see
+            )
+            log.error(
+                "LLM call failed for chat response. Prompt might be too long or Ollama error occurred."
+            )
         history.append({"role": "assistant", "content": response_text})
 
         # --- MODIFIED: Only add chat history to memory if agent is running ---
@@ -404,6 +418,7 @@ def chat_response(
         else:
             log.info("Agent paused, skipping adding chat history to memory.")
 
+        # --- Task generation logic remains the same ---
         if _should_generate_task(message, response_text):
             log.info("Interaction warrants task generation...")
             first_task_generated = agent_instance.generate_new_tasks(
@@ -435,13 +450,15 @@ def chat_response(
                     log.info(
                         f"Task generated (ID: {last_gen_id}): {first_task_generated[:60]}..."
                     )
-                    notification = f"\n\n*(Okay, based on our chat, I've created task {last_gen_id}: \"{first_task_generated}\". I'll work on it when possible. You can prioritize it if needed.)*"
-                    history[-1]["content"] += notification
+                    # Avoid modifying history if response was the error message
+                    if response_text != "Sorry, error generating response.":
+                        notification = f"\n\n*(Okay, based on our chat, I've created task {last_gen_id}: \"{first_task_generated}\". I'll work on it when possible. You can prioritize it if needed.)*"
+                        history[-1]["content"] += notification
                     agent_instance._save_qlora_datapoint(
                         source_type="chat_task_generation",
                         instruction="User interaction led to this task. Respond confirming task creation.",
                         input_context=f"Identity: {agent_identity}\nUser: {message}\nActivity: {agent_activity_context}",
-                        output=f"{response_text}{notification}",
+                        output=f"{response_text}{notification if response_text != 'Sorry, error generating response.' else ''}",  # Add notification to QLoRA only if included in actual response
                     )
                 else:
                     task_display_text = (
@@ -745,7 +762,6 @@ else:
                     with gr.Column(scale=3):
                         chat_chatbot = gr.Chatbot(
                             label="Conversation",
-                            bubble_full_width=False,
                             height=500,
                             show_copy_button=True,
                             type="messages",
@@ -977,15 +993,6 @@ else:
 
             # --- Default return values are the last known state ---
             monitor_updates_to_return = last_monitor_state
-            # --- Get current suggestion feedback (might be empty or set by button click) ---
-            current_suggestion_feedback = suggestion_feedback_box.value or ""
-            # --- Determine feedback to show: keep existing if set, otherwise clear ---
-            # This logic is tricky with timers vs. button clicks. Let's simplify:
-            # The timer will *always* clear the feedback box unless a button click just happened.
-            # However, Gradio state management makes this hard.
-            # Easiest: Timer update function *doesn't* touch the suggestion feedback.
-            # The button click sets it, and it stays until the *next* button click clears it.
-            # Let's revert the timer's responsibility for the feedback box.
 
             if agent_instance and agent_instance._is_running.is_set():
                 log.debug("Agent running, updating Monitor tab...")
@@ -1002,17 +1009,15 @@ else:
                 monitor_updates_to_return = last_monitor_state
 
             # --- Final Assembly & Checks ---
-            expected_len = (
-                len(monitor_outputs_with_feedback) - 1
-            )  # Timer targets 6 outputs now
+            expected_len = 6  # Timer targets 6 outputs now
             if (
                 not isinstance(monitor_updates_to_return, tuple)
-                or len(monitor_updates_to_return) != 6
+                or len(monitor_updates_to_return) != expected_len
             ):
                 log.error(
-                    f"Monitor update tuple structure mismatch. Expected 6 elements. Got {len(monitor_updates_to_return) if isinstance(monitor_updates_to_return, tuple) else type(monitor_updates_to_return)}"
+                    f"Monitor update tuple structure mismatch. Expected {expected_len} elements. Got {len(monitor_updates_to_return) if isinstance(monitor_updates_to_return, tuple) else type(monitor_updates_to_return)}"
                 )
-                monitor_updates_to_return = ("Error: Struct Mismatch",) * 6
+                monitor_updates_to_return = ("Error: Struct Mismatch",) * expected_len
 
             # Return only the monitor components, excluding the feedback box
             return monitor_updates_to_return

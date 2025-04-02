@@ -84,8 +84,8 @@ class AutonomousAgent:
             task_description="Reflecting on identity",
             context=f"Reason: {reason}",
             identity_statement=self.identity_statement, # <<<--- PASS IDENTITY
-            n_results=config.IDENTITY_REVISION_MEMORY_COUNT,
-            n_final=8
+            n_results=config.MEMORY_COUNT_IDENTITY_REVISION * 2,
+            n_final=config.MEMORY_COUNT_IDENTITY_REVISION
         )
 
         memory_context_list = []
@@ -237,8 +237,8 @@ I am an AI assistant focused on research tasks. I've recently improved my web br
             task_description=task_description,
             context=context,
             identity_statement=self.identity_statement, # <<<--- PASS IDENTITY
-            n_results=12,
-            n_final=5
+            n_results=config.MEMORY_COUNT_GENERAL_THINKING * 2,
+            n_final=config.MEMORY_COUNT_GENERAL_THINKING
         )
 
         # --- Format memories with relative time ---
@@ -628,8 +628,8 @@ REFLECTIONS: <Optional thoughts.>
             task_description="Task Generation Context",
             context=context_query,
             identity_statement=self.identity_statement, # <<<--- PASS IDENTITY
-            n_results=15,
-            n_final=10
+            n_results=config.MEMORY_COUNT_NEW_TASKS * 2,
+            n_final=config.MEMORY_COUNT_NEW_TASKS
         )
         # --- Format with relative time ---
         mem_summary_list = []
@@ -690,9 +690,10 @@ REFLECTIONS: <Optional thoughts.>
                 except: priority = 5
                 dependencies_raw = task_data.get("depends_on"); validated_dependencies = []
                 if isinstance(dependencies_raw, list):
-                    for dep_id in dependencies_raw: dep_id_str = str(dep_id).strip();
-                    if dep_id_str in valid_existing_task_ids or dep_id_str in current_task_ids_in_batch: validated_dependencies.append(dep_id_str)
-                    else: log.warning(f"Dependency '{dep_id_str}' for new task not found. Ignoring.")
+                    for dep_id in dependencies_raw: 
+                        dep_id_str = str(dep_id).strip();
+                        if dep_id_str in valid_existing_task_ids or dep_id_str in current_task_ids_in_batch: validated_dependencies.append(dep_id_str)
+                        else: log.warning(f"Dependency '{dep_id_str}' for new task not found. Ignoring.")
 
                 new_task = Task(description, priority, depends_on=validated_dependencies or None); new_task_id = self.task_queue.add_task(new_task)
                 if new_task_id:
@@ -765,8 +766,8 @@ REFLECTIONS: <Optional thoughts.>
              task_description="Session Reflection",
              context="End of work session",
              identity_statement=self.identity_statement, # <<<--- PASS IDENTITY
-             n_results=20,
-             n_final=15
+             n_results=config.MEMORY_COUNT_REFLECTIONS * 2,
+             n_final=config.MEMORY_COUNT_REFLECTIONS
          )
          # --- Format with relative time ---
          mem_summary_list = []
