@@ -1,3 +1,4 @@
+# FILE: utils.py
 # autonomous_agent/llm_utils.py
 import os
 import requests
@@ -12,6 +13,8 @@ from config import (
     OLLAMA_TIMEOUT,
     MODEL_CONTEXT_LENGTH,
     ARTIFACT_FOLDER,
+    SEARXNG_BASE_URL, # Added for status check
+    SEARXNG_TIMEOUT, # Added for status check
 )
 
 # Suggestion: Consider adding basic logging setup here or importing from a dedicated logging module
@@ -76,6 +79,54 @@ def call_ollama_api(
             return None
     return None
 
+# --- NEW: Status Check Functions ---
+def check_ollama_status(base_url: str = OLLAMA_BASE_URL, timeout: int = 5) -> Tuple[bool, str]:
+    """Checks if the Ollama API is reachable and responding."""
+    if not base_url:
+        return False, "Ollama base URL not configured."
+    # Try a lightweight endpoint, like listing models or just hitting the base URL
+    api_url = f"{base_url}/api/tags" # Check models endpoint
+    try:
+        response = requests.get(api_url, timeout=timeout)
+        response.raise_for_status()
+        # Check if response is valid JSON (expected for /api/tags)
+        response.json()
+        return True, "OK"
+    except requests.exceptions.Timeout:
+        return False, f"Timeout ({timeout}s)"
+    except requests.exceptions.ConnectionError:
+        return False, "Connection Error"
+    except requests.exceptions.RequestException as e:
+        status = e.response.status_code if hasattr(e, 'response') and e.response is not None else 'N/A'
+        return False, f"Request Error (Status: {status})"
+    except json.JSONDecodeError:
+        return False, "Invalid JSON Response (API might be up but malfunctioning)"
+    except Exception as e:
+        return False, f"Unexpected Error: {str(e)[:50]}"
+
+def check_searxng_status(base_url: str = SEARXNG_BASE_URL, timeout: int = 5) -> Tuple[bool, str]:
+    """Checks if the SearXNG instance is reachable."""
+    if not base_url:
+        return False, "SearXNG base URL not configured."
+    try:
+        # Just check if the base URL is accessible
+        response = requests.get(base_url, timeout=timeout, headers={'Accept': 'text/html'})
+        response.raise_for_status()
+        # Basic check for expected HTML content
+        if "<html" not in response.text.lower():
+            return True, "OK (Unexpected Content)" # Reachable, but maybe not SearXNG homepage
+        return True, "OK"
+    except requests.exceptions.Timeout:
+        return False, f"Timeout ({timeout}s)"
+    except requests.exceptions.ConnectionError:
+        return False, "Connection Error"
+    except requests.exceptions.RequestException as e:
+        status = e.response.status_code if hasattr(e, 'response') and e.response is not None else 'N/A'
+        return False, f"Request Error (Status: {status})"
+    except Exception as e:
+        return False, f"Unexpected Error: {str(e)[:50]}"
+# --- End NEW Status Check Functions ---
+
 
 def format_relative_time(timestamp_str: Optional[str]) -> str:
     """Converts an ISO timestamp string into a user-friendly relative time string."""
@@ -131,8 +182,11 @@ def format_relative_time(timestamp_str: Optional[str]) -> str:
 # New shared utility functions moved from artifact_reader.py and artifact_writer.py
 def sanitize_and_validate_path(
     filename: str, base_artifact_path: str
-) -> Tuple[bool, str, Optional[str]]:
-    """Sanitizes the filename and validates that it points to a path within the artifact workspace."""
+) -> Tuple[bool, str, Optional[str], Optional[str]]: # Added relative_filename output
+    """
+    Sanitizes the filename and validates that it points to a path within the artifact workspace.
+    Returns: (is_valid, message, full_path, relative_filename)
+    """
     try:
         # Normalize the received filename and join with the base artifact folder path
         normalized_filename = os.path.normpath(filename).lstrip(os.sep)
@@ -145,13 +199,14 @@ def sanitize_and_validate_path(
                 False,
                 "Path validation failed: Attempted access outside of designated workspace.",
                 None,
+                None,
             )
 
         full_path = os.path.abspath(normalized_joined_path)
 
     except Exception as e:
         log.error(f"Error resolving path for '{filename}': {e}")
-        return False, f"Internal error resolving path: {e}", None
+        return False, f"Internal error resolving path: {e}", None, None
 
     # Ensure the final path is within the artifact folder
     normalized_base_path = os.path.normpath(base_artifact_path)
@@ -166,14 +221,20 @@ def sanitize_and_validate_path(
             False,
             "Path validation failed: Attempted access outside of designated workspace.",
             None,
+            None,
         )
 
     max_path_len = 255
     if len(full_path) > max_path_len:
-        return False, f"Resulting file path is too long (>{max_path_len} chars).", None
+        return False, f"Resulting file path is too long (>{max_path_len} chars).", None, None
 
     log.debug(f"Path validated: '{filename}' -> '{full_path}'")
-    return True, "Path validated successfully.", full_path, normalized_filename
+    # Calculate relative path *after* validation
+    relative_path = os.path.relpath(full_path, normalized_base_path)
+    # Handle edge case where the path is the base itself
+    relative_path = '.' if relative_path == os.curdir else relative_path
+
+    return True, "Path validated successfully.", full_path, relative_path
 
 
 def list_directory_contents(directory_path: str) -> Tuple[bool, List[str]]:

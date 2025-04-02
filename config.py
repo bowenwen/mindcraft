@@ -82,6 +82,10 @@ INITIAL_IDENTITY_STATEMENT = os.environ.get(
     "I am a helpful and diligent agent designed to process tasks, learn from my experiences, and interact effectively. My goal is to complete assigned objectives efficiently using available tools and knowledge.",
 )
 
+# --- UI Configuration ---
+UI_STEP_HISTORY_LENGTH = int(os.environ.get("UI_STEP_HISTORY_LENGTH", 10))
+UI_UPDATE_INTERVAL = os.environ.get("UI_UPDATE_INTERVAL", 0.5)
+
 # --- Logging Configuration ---
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 

@@ -9,7 +9,7 @@ import re
 import traceback
 import threading
 from typing import List, Dict, Any, Optional, Tuple
-from collections import Counter
+from collections import Counter, deque # <<< Added deque for step history
 
 # --- Project Imports ---
 import config
@@ -18,7 +18,10 @@ from task_manager import TaskQueue
 from memory import AgentMemory
 from tools import load_tools
 # Use specific helpers from utils
-from utils import call_ollama_api, format_relative_time, sanitize_and_validate_path, list_directory_contents
+from utils import ( # <<<--- UPDATED IMPORTS
+    call_ollama_api, format_relative_time, sanitize_and_validate_path,
+    list_directory_contents, check_ollama_status, check_searxng_status
+)
 import chromadb
 
 # --- Logging Setup ---
@@ -36,8 +39,7 @@ class AutonomousAgent:
             ollama_chat_model=config.OLLAMA_CHAT_MODEL,
             ollama_base_url=config.OLLAMA_BASE_URL
         )
-        # --- MODIFIED: Load new consolidated tools ---
-        self.tools = load_tools() # Now loads {"web": WebTool(), "memory": MemoryTool(), "file": FileTool()}
+        self.tools = load_tools()
         self.ollama_base_url = config.OLLAMA_BASE_URL
         self.ollama_chat_model = config.OLLAMA_CHAT_MODEL
         self.ollama_embed_model = config.OLLAMA_EMBED_MODEL
@@ -45,10 +47,12 @@ class AutonomousAgent:
         self.qlora_dataset_path = config.QLORA_DATASET_PATH
         self.identity_statement: str = config.INITIAL_IDENTITY_STATEMENT
 
+        # --- MODIFIED: Added fields for richer UI state ---
         self.session_state = {
             "current_task_id": None, "investigation_context": "", "current_task_retries": 0,
             "last_checkpoint": None, "last_web_browse_content": None, "identity_statement": self.identity_statement,
-            "user_suggestion_move_on_pending": False
+            "user_suggestion_move_on_pending": False,
+            "last_step_details": deque(maxlen=config.UI_STEP_HISTORY_LENGTH) # <<< Store recent step details
         }
         self.load_session_state()
 
@@ -56,10 +60,22 @@ class AutonomousAgent:
         self._shutdown_request = threading.Event()
         self._agent_thread: Optional[threading.Thread] = None
         self._state_lock = threading.Lock()
+
+        # --- MODIFIED: Initialize new UI state keys ---
         self._ui_update_state: Dict[str, Any] = {
-            "status": "paused", "log": "Agent paused.", "current_task_id": self.session_state.get("current_task_id"),
-            "current_task_desc": "N/A", "recent_memories": [], "last_web_content": self.session_state.get("last_web_browse_content", "(None)"),
-            "final_answer": None, "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
+            "status": "paused",
+            "log": "Agent paused.",
+            "current_task_id": self.session_state.get("current_task_id"),
+            "current_task_desc": "N/A",
+            "thinking": "(No thinking process yet)", # <<< New
+            "dependent_tasks": [], # <<< New
+            "last_action_type": None, # <<< New
+            "last_tool_results": None, # <<< New (Stores raw tool result dict)
+            "recent_memories": [],
+            "last_web_content": self.session_state.get("last_web_browse_content", "(None)"), # <<< Keep for compatibility? Or remove? Decide later. For now keep.
+            "final_answer": None,
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "step_history": list(self.session_state.get("last_step_details", [])) # <<< New: Pass history to UI
          }
 
         if self.session_state.get("current_task_id"):
@@ -93,7 +109,7 @@ class AutonomousAgent:
             mem_type = m['metadata'].get('type', 'N/A')
             content_snippet = m['content'][:300]
             memory_context_list.append(f"- [Memory - {relative_time}] (Type: {mem_type}):\n  {content_snippet}...")
-        memory_context = "\n\n".join(memory_context_list) if memory_context_list else "No specific memories selected for this revision."
+        memory_context = "\n".join(memory_context_list) if memory_context_list else "No specific memories selected for this revision."
 
         prompt = f"""You are an AI agent reflecting on your identity. Your goal is to revise your personal identity statement based on your recent experiences and purpose.
 
@@ -140,6 +156,9 @@ I am an AI assistant focused on research tasks. I've recently improved my web br
             for key, value in kwargs.items():
                 if key in self._ui_update_state: self._ui_update_state[key] = value
                 else: log.warning(f"Attempted to update unknown UI state key: {key}")
+            # --- MODIFIED: Ensure step history in UI state matches session state ---
+            self._ui_update_state["step_history"] = list(self.session_state.get("last_step_details", []))
+
 
     def get_ui_update_state(self) -> Dict[str, Any]:
         with self._state_lock: return self._ui_update_state.copy()
@@ -157,6 +176,17 @@ I am an AI assistant focused on research tasks. I've recently improved my web br
                     loaded_identity = loaded.get("identity_statement", config.INITIAL_IDENTITY_STATEMENT)
                     if not loaded_identity: loaded_identity = config.INITIAL_IDENTITY_STATEMENT
 
+                    # --- MODIFIED: Load step history (handle potential non-existence or invalid format) ---
+                    loaded_history = loaded.get("last_step_details")
+                    if isinstance(loaded_history, list):
+                        # Validate items slightly? For now, just limit length
+                        loaded_history = loaded_history[-config.UI_STEP_HISTORY_LENGTH:]
+                        loaded["last_step_details"] = deque(loaded_history, maxlen=config.UI_STEP_HISTORY_LENGTH)
+                    else:
+                        log.warning(f"Invalid or missing 'last_step_details' in session state. Initializing empty history.")
+                        loaded["last_step_details"] = deque(maxlen=config.UI_STEP_HISTORY_LENGTH)
+                    # --- End modification ---
+
                     self.session_state.update(loaded)
                     self.identity_statement = loaded_identity
                     self.session_state["identity_statement"] = self.identity_statement
@@ -164,6 +194,7 @@ I am an AI assistant focused on research tasks. I've recently improved my web br
                     log.info(f"Loaded session state from {self.session_state_path}.")
                     log.info(f"  Loaded Identity: {self.identity_statement[:100]}...")
                     log.info(f"  User Suggestion Pending: {self.session_state.get('user_suggestion_move_on_pending')}")
+                    log.info(f"  Loaded {len(self.session_state['last_step_details'])} step history entries.")
                 else: log.warning(f"Session state file '{self.session_state_path}' invalid format.")
             except json.JSONDecodeError as e: log.warning(f"Failed loading session state JSON '{self.session_state_path}': {e}.")
             except Exception as e: log.warning(f"Failed loading session state '{self.session_state_path}': {e}.")
@@ -171,6 +202,7 @@ I am an AI assistant focused on research tasks. I've recently improved my web br
             log.info(f"Session state file '{self.session_state_path}' not found. Using defaults.")
             self.session_state["identity_statement"] = self.identity_statement
             self.session_state["user_suggestion_move_on_pending"] = False
+            self.session_state["last_step_details"] = deque(maxlen=config.UI_STEP_HISTORY_LENGTH) # Initialize empty history
 
 
     def save_session_state(self):
@@ -178,7 +210,10 @@ I am an AI assistant focused on research tasks. I've recently improved my web br
             with self._state_lock:
                 self.session_state["last_checkpoint"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
                 self.session_state["identity_statement"] = self.identity_statement
-            with open(self.session_state_path, "w", encoding='utf-8') as f: json.dump(self.session_state, f, indent=2, ensure_ascii=False)
+                # --- MODIFIED: Convert deque to list for JSON serialization ---
+                state_to_save = self.session_state.copy()
+                state_to_save["last_step_details"] = list(self.session_state["last_step_details"])
+            with open(self.session_state_path, "w", encoding='utf-8') as f: json.dump(state_to_save, f, indent=2, ensure_ascii=False)
         except Exception as e: log.error(f"Error saving session state to '{self.session_state_path}': {e}")
 
 
@@ -205,7 +240,7 @@ I am an AI assistant focused on research tasks. I've recently improved my web br
     def create_task(self, description: str, priority: int = 1, depends_on: Optional[List[str]] = None) -> Optional[str]:
         return self.task_queue.add_task(Task(description, priority, depends_on=depends_on))
 
-    # --- MODIFIED: Generate descriptions for new tools and actions ---
+    # --- MODIFIED: get_available_tools_description ---
     def get_available_tools_description(self) -> str:
         """Generates a description string for the available tools and their actions."""
         if not self.tools:
@@ -215,12 +250,15 @@ I am an AI assistant focused on research tasks. I've recently improved my web br
         for name, tool in self.tools.items():
             # Basic check: are the underlying services configured?
             is_active = True
-            if name == "web" and not config.SEARXNG_BASE_URL:
-                log.warning("Web tool 'search' action disabled: SEARXNG_BASE_URL not set.")
-                # Note: Browse might still work, description should clarify
-                tool.description += " (Search functionality may be disabled due to config)"
-                # Consider if the whole tool should be disabled if search is core
-                # is_active = False # If search is essential
+            tool_description = tool.description # Get base description
+
+            if name == "web":
+                if not config.SEARXNG_BASE_URL:
+                    log.warning("Web tool 'search' action disabled: SEARXNG_BASE_URL not set.")
+                    # Update description to reflect potential partial functionality
+                    tool_description += "\n  *Note: Search functionality requires SEARXNG_BASE_URL to be configured.*"
+                    # Don't disable the whole tool, browse might still work.
+                # Add connectivity check note if possible? Maybe too much detail here.
 
             if name == "memory" and not self.memory:
                 is_active = False # Memory is essential for this tool
@@ -229,14 +267,18 @@ I am an AI assistant focused on research tasks. I've recently improved my web br
                  log.warning("File tool disabled: ARTIFACT_FOLDER not set.")
                  is_active = False
 
+            # Status tool is always active if agent is running
+            if name == "status":
+                 is_active = True
+
             if is_active:
-                active_tools_desc.append(f"- Tool Name: {name}\n  Description: {tool.description}")
+                active_tools_desc.append(f"- Tool Name: **{name}**\n  Description: {tool_description}")
 
         if not active_tools_desc:
             return "No tools currently active or available (check configuration)."
         return "\n".join(active_tools_desc)
+    # --- END MODIFICATION ---
 
-    # --- MODIFIED: Updated prompt and parsing for new tool structure ---
     def generate_thinking(
         self,
         task_description: str,
@@ -271,7 +313,7 @@ I am an AI assistant focused on research tasks. I've recently improved my web br
         memory_context_str = "\n\n".join(other_memories_context_list) if other_memories_context_list else "No other relevant memories selected."
         user_provided_info_str = "\n---\n".join(user_provided_info_content) if user_provided_info_content else None
 
-        # --- MODIFIED PROMPT ---
+        # --- MODIFIED PROMPT (Added 'status' tool, clarified PARAMETERS) ---
         prompt = f"""You are an autonomous AI agent. Your primary goal is to achieve the **Overall Task** by deciding the single best next step, while considering your identity and user interactions.
 
 **Your Current Identity:**
@@ -312,15 +354,15 @@ I am an AI assistant focused on research tasks. I've recently improved my web br
 5.  **Choose Action:** Decide between `use_tool` or `final_answer`. Use `final_answer` only when the *original* task goal is fully met, or if reasonably wrapping up based on sufficient progress and the user suggestion.
 **Output Format (Strict JSON-like structure):**
 THINKING:
-<Your reasoning process. Explain analysis, memory consideration (recency/novelty), how you're handling user suggestion/info (if any), your plan (especially recovery or conclusion strategy), and alignment with identity/task. Specify the chosen tool AND action.>
+<Your reasoning process. Explain analysis, memory consideration (recency/novelty), how you're handling user suggestion/info (if any), your plan (especially recovery or conclusion strategy), and alignment with identity/task. Specify the chosen tool AND action (if applicable).>
 NEXT_ACTION: <"use_tool" or "final_answer">
 If NEXT_ACTION is "use_tool":
-TOOL: <name_of_tool_from_list (e.g., web, memory, file)>
-PARAMETERS: <{{ "action": "specific_action_for_tool", "param1": "value1", ... }}> <-- MUST INCLUDE 'action'!
+TOOL: <name_of_tool_from_list (e.g., web, memory, file, status)>
+PARAMETERS: <{{ "action": "specific_action_for_tool", "param1": "value1", ... }} or {{}}> <-- MUST INCLUDE 'action' for web/memory/file tools! **Use empty dict {{}} for 'status' tool.**
 If NEXT_ACTION is "final_answer":
 ANSWER: <Your complete answer, or a summary if concluding early based on suggestion.>
 REFLECTIONS: <Optional thoughts.>
-**Critical Formatting Reminders:** Start *immediately* with "THINKING:". Structure must be exact. `PARAMETERS` must be valid JSON and **must include the "action" key** corresponding to the tool's capabilities (e.g., "search", "browse", "read", "write", "list"). Tool name must be one of the available tools.
+**Critical Formatting Reminders:** Start *immediately* with "THINKING:". Structure must be exact. `PARAMETERS` must be valid JSON. For web/memory/file tools, `PARAMETERS` **must include the "action" key** corresponding to the tool's capabilities (e.g., "search", "browse", "read", "write", "list", "status_report"). **For the 'status' tool, use an empty JSON object `{}` for PARAMETERS.** Tool name must be one of the available tools.
 """
         # --- END MODIFIED PROMPT ---
 
@@ -328,7 +370,7 @@ REFLECTIONS: <Optional thoughts.>
         llm_response_text = call_ollama_api(prompt, self.ollama_chat_model, self.ollama_base_url, timeout=180)
         if llm_response_text is None: log.error("Failed to get thinking response from Ollama."); return "LLM communication failed.", {"type": "error", "message": "LLM communication failure (thinking).", "subtype": "llm_comm_error"}
 
-        # --- MODIFIED Parsing logic to handle action within parameters ---
+        # --- MODIFIED: Parsing logic for parameters (handle 'status' tool) ---
         try:
             action: Dict[str, Any] = {"type": "unknown"}; raw_thinking = llm_response_text
             thinking_marker = "THINKING:"; action_marker = "NEXT_ACTION:"; tool_marker = "TOOL:"; params_marker = "PARAMETERS:"; answer_marker = "ANSWER:"; reflections_marker = "REFLECTIONS:"
@@ -360,9 +402,14 @@ REFLECTIONS: <Optional thoughts.>
                          if pos != -1 and (next_marker_pos == -1 or pos < next_marker_pos): next_marker_pos = pos
                     if next_marker_pos != -1: end_params = next_marker_pos
                     raw_params = llm_response_text[params_str_start:end_params].strip()
+                    # Handle potential markdown code blocks around JSON
                     raw_params = re.sub(r'^```json\s*', '', raw_params, flags=re.I|re.M); raw_params = re.sub(r'^```\s*', '', raw_params, flags=re.M); raw_params = re.sub(r'\s*```$', '', raw_params, flags=re.M); raw_params = raw_params.strip()
                     json_str = raw_params; params_json = None; log.debug(f"Raw PARAMS string: '{json_str}'")
-                    if json_str:
+
+                    # Special case for status tool: allow empty {}
+                    if tool_name == "status" and json_str == "{}":
+                         params_json = {}; log.debug("PARAMS parsed as empty dict {} for status tool.")
+                    elif json_str:
                         try: params_json = json.loads(json_str); log.debug(f"PARAMS parsed directly: {params_json}")
                         except json.JSONDecodeError as e1:
                             log.warning(f"Direct JSON parse failed: {e1}. Fixing..."); fixed_str = json_str.replace('“', '"').replace('”', '"').replace("‘", "'").replace("’", "'"); fixed_str = re.sub(r",\s*([}\]])", r"\1", fixed_str); log.debug(f"Attempting parse after fixes: '{fixed_str}'")
@@ -371,41 +418,57 @@ REFLECTIONS: <Optional thoughts.>
                                 first_brace = raw_params.find('{'); last_brace = raw_params.rfind('}'); extracted_str = raw_params[first_brace : last_brace + 1] if first_brace != -1 and last_brace > first_brace else raw_params; log.debug(f"Extracting braces: '{extracted_str}'")
                                 try: fixed_extracted_str = extracted_str.replace('“', '"').replace('”', '"').replace("‘", "'").replace("’", "'"); fixed_extracted_str = re.sub(r",\s*([}\]])", r"\1", fixed_extracted_str); log.debug(f"Trying extracted+fixed: '{fixed_extracted_str}'"); params_json = json.loads(fixed_extracted_str); log.debug(f"PARAMS parsed after extraction+fixes: {params_json}")
                                 except json.JSONDecodeError as e3: err_msg = f"Invalid JSON in PARAMETERS after all attempts: {e3}. Original: '{raw_params}'"; log.error(err_msg); action = {"type": "error", "message": err_msg, "subtype": "parse_error"}; return raw_thinking, action
-                    else: action = {"type": "error", "message": "Empty PARAMETERS block.", "subtype": "parse_error"}; return raw_thinking, action
-                else: action = {"type": "error", "message": "Missing PARAMETERS marker for use_tool action.", "subtype": "parse_error"}; return raw_thinking, action
+                    # If status tool, empty string for params is also okay
+                    elif tool_name == "status" and not json_str:
+                         params_json = {}; log.debug("PARAMS interpreted as empty dict {} for status tool (no params provided).")
+                    else: # Other tools require params
+                         action = {"type": "error", "message": "Empty PARAMETERS block.", "subtype": "parse_error"}; return raw_thinking, action
+                elif tool_name != "status": # Status tool doesn't need PARAMETERS marker
+                     action = {"type": "error", "message": "Missing PARAMETERS marker for use_tool action.", "subtype": "parse_error"}; return raw_thinking, action
+                else: # Status tool: okay if no PARAMS marker found, treat as {}
+                    params_json = {}
+                    log.debug("No PARAMETERS marker found for status tool, assuming empty params {}.")
+
 
                 # Validate Tool, Action, and Required Parameters
-                if action.get("type") == "use_tool":
+                if action.get("type") != "error": # Only validate if no previous parse error
                     if not tool_name: action = {"type": "error", "message": "Internal Error: Tool name missing.", "subtype": "parse_error"}
                     elif tool_name not in self.tools: action = {"type": "error", "message": f"Tool '{tool_name}' not available.", "subtype": "invalid_tool"}
                     elif not isinstance(params_json, dict): action = {"type": "error", "message": f"Parsed PARAMETERS not a JSON object: {type(params_json)}", "subtype": "parse_error"}
                     else:
-                        tool_action = params_json.get("action")
-                        if not tool_action or not isinstance(tool_action, str):
-                            action = {"type": "error", "message": "Missing or invalid 'action' key within PARAMETERS.", "subtype": "missing_action"}
-                        else:
-                            valid_params = True; err_msg = ""; action_subtype = "invalid_params"
-                            # --- Parameter validation based on tool and action ---
-                            if tool_name == "web":
-                                if tool_action == "search" and ("query" not in params_json or not isinstance(params_json.get("query"), str) or not params_json["query"].strip()): err_msg = "Missing/invalid 'query' for web search."
-                                elif tool_action == "browse" and ("url" not in params_json or not isinstance(params_json.get("url"), str) or not params_json["url"].strip()): err_msg = "Missing/invalid 'url' for web browse."
-                                elif tool_action not in ["search", "browse"]: err_msg = f"Invalid action '{tool_action}' for web tool." ; action_subtype="invalid_action"
-                            elif tool_name == "memory":
-                                if tool_action == "search" and ("query" not in params_json or not isinstance(params_json.get("query"), str) or not params_json["query"].strip()): err_msg = "Missing/invalid 'query' for memory search."
-                                elif tool_action == "write" and ("content" not in params_json or not isinstance(params_json.get("content"), str)): err_msg = "Missing/invalid 'content' (must be string) for memory write." # Content can be empty string
-                                elif tool_action not in ["search", "write"]: err_msg = f"Invalid action '{tool_action}' for memory tool."; action_subtype="invalid_action"
-                            elif tool_name == "file":
-                                if tool_action == "read" and ("filename" not in params_json or not isinstance(params_json.get("filename"), str) or not params_json["filename"].strip()): err_msg = "Missing/invalid 'filename' for file read."
-                                elif tool_action == "write" and ("filename" not in params_json or not isinstance(params_json.get("filename"), str) or not params_json["filename"].strip() or "content" not in params_json or not isinstance(params_json.get("content"), str)): err_msg = "Missing/invalid 'filename' or 'content' for file write."
-                                elif tool_action == "list" and ("directory" in params_json and not isinstance(params_json.get("directory"), str)): err_msg = "Invalid 'directory' (must be string if provided) for file list."
-                                elif tool_action not in ["read", "write", "list"]: err_msg = f"Invalid action '{tool_action}' for file tool."; action_subtype="invalid_action"
-                            else: # Should not happen if tool_name check passed
-                                 err_msg = f"Parameter validation not implemented for tool '{tool_name}'."; action_subtype="internal_error"
+                        tool_action = params_json.get("action") # Might be None for status tool
+                        valid_params = True; err_msg = ""; action_subtype = "invalid_params"
+                        # --- Parameter validation based on tool and action ---
+                        if tool_name == "web":
+                            if not tool_action or not isinstance(tool_action, str): err_msg = "Missing or invalid 'action' key within PARAMETERS for web tool." ; action_subtype = "missing_action"
+                            elif tool_action == "search" and ("query" not in params_json or not isinstance(params_json.get("query"), str) or not params_json["query"].strip()): err_msg = "Missing/invalid 'query' for web search."
+                            elif tool_action == "browse" and ("url" not in params_json or not isinstance(params_json.get("url"), str) or not params_json["url"].strip()): err_msg = "Missing/invalid 'url' for web browse."
+                            elif tool_action not in ["search", "browse"]: err_msg = f"Invalid action '{tool_action}' for web tool." ; action_subtype="invalid_action"
+                        elif tool_name == "memory":
+                            if not tool_action or not isinstance(tool_action, str): err_msg = "Missing or invalid 'action' key within PARAMETERS for memory tool." ; action_subtype = "missing_action"
+                            elif tool_action == "search" and ("query" not in params_json or not isinstance(params_json.get("query"), str) or not params_json["query"].strip()): err_msg = "Missing/invalid 'query' for memory search."
+                            elif tool_action == "write" and ("content" not in params_json or not isinstance(params_json.get("content"), str)): err_msg = "Missing/invalid 'content' (must be string) for memory write." # Content can be empty string
+                            elif tool_action not in ["search", "write"]: err_msg = f"Invalid action '{tool_action}' for memory tool."; action_subtype="invalid_action"
+                        elif tool_name == "file":
+                            if not tool_action or not isinstance(tool_action, str): err_msg = "Missing or invalid 'action' key within PARAMETERS for file tool." ; action_subtype = "missing_action"
+                            elif tool_action == "read" and ("filename" not in params_json or not isinstance(params_json.get("filename"), str) or not params_json["filename"].strip()): err_msg = "Missing/invalid 'filename' for file read."
+                            elif tool_action == "write" and ("filename" not in params_json or not isinstance(params_json.get("filename"), str) or not params_json["filename"].strip() or "content" not in params_json or not isinstance(params_json.get("content"), str)): err_msg = "Missing/invalid 'filename' or 'content' for file write."
+                            elif tool_action == "list" and ("directory" in params_json and not isinstance(params_json.get("directory"), str)): err_msg = "Invalid 'directory' (must be string if provided) for file list."
+                            elif tool_action not in ["read", "write", "list"]: err_msg = f"Invalid action '{tool_action}' for file tool."; action_subtype="invalid_action"
+                        elif tool_name == "status":
+                            if params_json and params_json != {}: # Should be empty
+                                err_msg = "Status tool does not accept any parameters."
+                                action_subtype = "invalid_params"
+                            # else: No action key needed, params must be empty
+                        else: # Should not happen if tool_name check passed
+                             err_msg = f"Parameter validation not implemented for tool '{tool_name}'."; action_subtype="internal_error"
 
-                            if err_msg:
-                                log.error(f"{err_msg} Tool: {tool_name}, Action: {tool_action}, Params: {params_json}"); action = {"type": "error", "message": err_msg, "subtype": action_subtype}; valid_params = False
-                            if valid_params:
-                                action["tool"] = tool_name; action["parameters"] = params_json; log.info(f"Parsed action: Use Tool '{tool_name}', Action '{tool_action}'")
+                        if err_msg:
+                            log.error(f"{err_msg} Tool: {tool_name}, Action: {tool_action}, Params: {params_json}"); action = {"type": "error", "message": err_msg, "subtype": action_subtype}; valid_params = False
+                        if valid_params:
+                             action["tool"] = tool_name
+                             action["parameters"] = params_json # Store parameters (even if empty for status)
+                             log.info(f"Parsed action: Use Tool '{tool_name}'" + (f", Action '{tool_action}'" if tool_action else ""))
             # --- END MODIFIED Parsing logic ---
             elif "final_answer" in action_type_str:
                 # --- Final Answer parsing unchanged ---
@@ -425,48 +488,78 @@ REFLECTIONS: <Optional thoughts.>
             return raw_thinking, action
         except Exception as e: log.exception(f"CRITICAL failure parsing LLM thinking response: {e}\nResponse:\n{llm_response_text}"); return raw_thinking or "Error parsing.", {"type": "error", "message": f"Internal error parsing LLM response: {e}", "subtype": "internal_error"}
 
-    # --- MODIFIED: Pass identity statement to memory tool ---
+    # --- MODIFIED: execute_tool ---
     def execute_tool(self, tool_name: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
          if tool_name not in self.tools: return {"error": f"Tool '{tool_name}' not found", "status": "failed"}
          tool = self.tools[tool_name]
-         tool_action = parameters.get("action", "unknown_action") # Get action for logging
-         log.info(f"Executing tool '{tool_name}', action '{tool_action}' with params: {parameters}")
+         tool_action = parameters.get("action") # Action might be None for status tool
+
+         # For status tool, action is implicitly 'status_report'
+         if tool_name == "status": tool_action = "status_report"
+         # Log requires action name, ensure it's set for logging
+         log_action = tool_action if tool_action else "(implicit)"
+         log.info(f"Executing tool '{tool_name}', action '{log_action}' with params: {parameters}")
 
          try:
              result: Dict[str, Any] = {}
-             # --- Pass memory instance AND identity statement if it's the memory tool ---
+             # Pass memory instance AND identity statement if it's the memory tool
              if tool_name == "memory":
                  result = tool.run(parameters, memory_instance=self.memory, identity_statement=self.identity_statement)
+             # Pass specific state data if it's the status tool
+             elif tool_name == "status":
+                 log.debug("Gathering state for status tool...")
+                 # Perform connectivity checks
+                 ollama_ok, ollama_msg = check_ollama_status()
+                 searxng_ok, searxng_msg = check_searxng_status()
+                 ollama_status_str = f"OK" if ollama_ok else f"FAIL ({ollama_msg})"
+                 searxng_status_str = f"OK" if searxng_ok else f"FAIL ({searxng_msg})"
+                 # Get task and memory summaries
+                 task_summary = self.task_queue.get_all_tasks_structured()
+                 memory_summary = self.memory.get_memory_summary()
+
+                 result = tool.run(
+                     agent_identity=self.identity_statement,
+                     task_queue_summary=task_summary,
+                     memory_summary=memory_summary,
+                     ollama_status=ollama_status_str,
+                     searxng_status=searxng_status_str
+                 )
              elif tool_name in ["web", "file"]:
                  result = tool.run(parameters)
              else:
                  # Fallback for potential future tools not requiring special args
                  result = tool.run(parameters)
 
-             log.info(f"Tool '{tool_name}' action '{tool_action}' finished.")
+             log.info(f"Tool '{tool_name}' action '{log_action}' finished.")
 
-             # Store last browse content specifically
+             # Store last browse content specifically (remains useful)
              if tool_name == 'web' and tool_action == 'browse' and isinstance(result, dict) and 'content' in result:
                  with self._state_lock: self.session_state['last_web_browse_content'] = result.get('content', '(Empty)')
 
-             # --- Standardize result checking ---
+             # Standardize result checking
              if not isinstance(result, dict):
-                 log.warning(f"Result from '{tool_name}' ({tool_action}) not a dict: {type(result)}")
+                 log.warning(f"Result from '{tool_name}' ({log_action}) not a dict: {type(result)}")
                  return {"tool_name": tool_name, "action": tool_action, "result": {"unexpected_result": str(result)}, "status": "completed_malformed_output"}
 
              if result.get("error"):
-                 log.warning(f"Tool '{tool_name}' ({tool_action}) reported error: {result['error']}")
+                 log.warning(f"Tool '{tool_name}' ({log_action}) reported error: {result['error']}")
                  # Ensure the core error keys are present for downstream handling
+                 # Ensure 'action' key is present in the returned dict
                  return {"tool_name": tool_name, "action": tool_action, "error": result["error"], "status": "failed", "result": result} # Include original result for context
 
-             # JSON serialization check
+             # JSON serialization check (important for state saving)
              try: json.dumps(result)
              except TypeError as json_err:
-                 log.warning(f"Result from '{tool_name}' ({tool_action}) not JSON serializable: {json_err}.")
-                 return {"tool_name": tool_name, "action": tool_action, "result": {"unserializable_result": str(result)}, "status": "completed_unserializable"}
+                 log.warning(f"Result from '{tool_name}' ({log_action}) not JSON serializable: {json_err}.")
+                 # Convert unserializable parts to string representation
+                 serializable_result = {}
+                 for k, v in result.items():
+                     try: json.dumps({k: v}) ; serializable_result[k] = v
+                     except TypeError: serializable_result[k] = f"<Unserializable type: {type(v).__name__}> {str(v)[:100]}..."
+                 # Ensure 'action' key is present in the returned dict
+                 return {"tool_name": tool_name, "action": tool_action, "result": serializable_result, "status": "completed_unserializable"}
 
-             # If no error reported by tool, assume success (tools should put error in 'error' key)
-             # Ensure standard keys are present, copying over the tool's result dict
+             # If no error reported by tool, assume success
              final_result = {"tool_name": tool_name, "action": tool_action, "status": "completed"}
              final_result.update(result) # Merge the tool's output
              final_result.pop("error", None) # Remove error key if somehow present without being caught
@@ -474,10 +567,10 @@ REFLECTIONS: <Optional thoughts.>
              return final_result # Return the combined dictionary
 
          except Exception as e:
-             log.exception(f"CRITICAL Error executing tool '{tool_name}' action '{tool_action}': {e}")
+             log.exception(f"CRITICAL Error executing tool '{tool_name}' action '{log_action}': {e}")
              # Return a standardized error format
              return {"tool_name": tool_name, "action": tool_action, "error": f"Tool execution raised exception: {e}", "status": "failed"}
-
+    # --- END MODIFICATION ---
 
     def _save_qlora_datapoint(self, source_type: str, instruction: str, input_context: str, output: str):
         if not output: return
@@ -528,7 +621,7 @@ REFLECTIONS: <Optional thoughts.>
             else: log.error(f"Failed to add summary memory for task {task.id}.")
         else: log.warning(f"Failed to generate summary for task {task.id}.")
 
-    # --- MODIFIED: Handle new tool structure in step execution ---
+    # --- MODIFIED: _execute_step (Thinking memory metadata includes action_subtype) ---
     def _execute_step(self, task: Task) -> Dict[str, Any]:
         step_start_time = time.time(); step_log = []; final_answer_text = None; step_status = "processing"; task_status_updated_this_step = False
         current_context = self.session_state.get("investigation_context", ""); step_num = self.session_state.get(f"task_{task.id}_step", 0) + 1
@@ -542,19 +635,36 @@ REFLECTIONS: <Optional thoughts.>
         if user_suggested_move_on: step_log.append("[INFO] User suggestion to wrap up is being considered this step.")
         log.info(f"Executing step {step_num} for task {task.id} (Retry: {current_retries})")
 
-        # 1. Generate Thinking (prompt/parsing updated for new tool structure)
+        # 1. Generate Thinking
         raw_thinking, action = self.generate_thinking(
             task.description, current_context, None, user_suggested_move_on=user_suggested_move_on
         )
         action_type = action.get("type", "error"); action_message = action.get("message", "Unknown error"); action_subtype = action.get("subtype", "unknown_error")
         thinking_to_store = raw_thinking if raw_thinking else "Thinking process not extracted."; step_log.append(f"Thinking:\n{thinking_to_store}")
+        # Add subtype to memory metadata
         self.memory.add_memory(f"Step {step_num} Thinking (Action: {action_type}, Subtype: {action_subtype}):\n{thinking_to_store}", {"type": "task_thinking", "task_id": task.id, "step": step_num, "action_type": action_type, "action_subtype": action_subtype})
 
+        # Prepare data for step history storage
+        step_details_for_history = {
+            "task_id": task.id,
+            "step": step_num,
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "thinking": thinking_to_store,
+            "action_type": action_type,
+            "action_params": None, # Will be filled if use_tool
+            "result_status": None, # Will be filled later
+            "result_summary": None, # Will be filled later
+            "log_snippet": None, # Will be filled at end
+        }
+
         # 2. Process Action or Error
+        tool_results_for_ui = None # Initialize here
         if action_type == "error":
             log.error(f"[STEP ERROR] LLM Action Error: {action_message} (Subtype: {action_subtype})"); step_log.append(f"[ERROR] Action Error: {action_message} (Type: {action_subtype})")
             error_context = f"\n--- Step {step_num} Error (Retry {current_retries+1}/{config.AGENT_MAX_STEP_RETRIES}): {action_message} (Type: {action_subtype}) ---"; current_context += error_context
             self.memory.add_memory(f"Step {step_num} Error: {action_message}", {"type": "agent_error", "task_id": task.id, "step": step_num, "error_subtype": action_subtype, "llm_response_snippet": raw_thinking[:200]}) # Add raw LLM response snippet
+            step_details_for_history["result_status"] = "error"
+            step_details_for_history["result_summary"] = f"LLM Action Error: {action_message} ({action_subtype})"
             if current_retries < config.AGENT_MAX_STEP_RETRIES:
                  self.session_state["current_task_retries"] = current_retries + 1; log.warning(f"Incrementing retry count to {current_retries + 1}."); step_status = "error_retry"
             else:
@@ -566,57 +676,95 @@ REFLECTIONS: <Optional thoughts.>
 
         elif action_type == "use_tool":
             tool_name = action.get("tool"); params = action.get("parameters")
-            tool_action = params.get("action", "unknown") # Extract action from params
-            log.info(f"[ACTION] Use Tool '{tool_name}', Action '{tool_action}'")
-            step_log.append(f"[ACTION] Use Tool: {tool_name}, Action: {tool_action}, Params: {json.dumps(params, ensure_ascii=False, indent=2)}")
+            # Get the specific action *within* the tool (e.g., 'search', 'browse', 'status_report')
+            # For status tool, 'action' might not be in params, default handled in execute_tool
+            tool_action = params.get("action") if params else None
+            if tool_name == "status": tool_action = "status_report" # Implicit action for status tool
 
-            # 3. Execute Tool (uses updated execute_tool which handles memory args)
+            log.info(f"[ACTION] Use Tool '{tool_name}', Action '{tool_action if tool_action else '(implicit)'}'")
+            step_log.append(f"[ACTION] Use Tool: {tool_name}, Action: {tool_action if tool_action else '(implicit)'}, Params: {json.dumps(params, ensure_ascii=False, indent=2)}")
+            step_details_for_history["action_params"] = params # Store params for history
+
+            # 3. Execute Tool
             tool_results = self.execute_tool(tool_name, params)
+            tool_results_for_ui = tool_results # Store raw results for UI display
             tool_status = tool_results.get("status", "unknown") # Get status from tool result
             tool_error = tool_results.get("error") # Get error from tool result
+            # Ensure action from result (if present) is used for history/memory
+            tool_action_from_result = tool_results.get("action", tool_action)
+            step_details_for_history["result_status"] = tool_status # Store status for history
 
             # Log tool result to context and memory
-            # Truncate potentially large results before adding to context/memory
             result_for_log = tool_results.get("result", tool_results) # Use 'result' key if present, else whole dict
-            if tool_name == "web" and tool_action == "browse" and "content" in result_for_log:
-                 result_display = f"Content Source: {result_for_log.get('content_source')}, Truncated: {result_for_log.get('truncated', False)}, Snippet: {result_for_log['content'][:300]}..."
-            elif tool_name == "file" and tool_action == "read" and "content" in result_for_log:
-                 result_display = f"Filepath: {result_for_log.get('filepath')}, Truncated: {result_for_log.get('truncated', False)}, Snippet: {result_for_log['content'][:300]}..."
-            else:
-                 try: result_display = json.dumps(result_for_log, indent=2, ensure_ascii=False)
-                 except: result_display = str(result_for_log) # Fallback
-            result_display = result_display[:1000] + "...(truncated)" if len(result_display) > 1000 else result_display
+            # Use specific content key if it's a status report for better formatting
+            if tool_name == "status" and tool_action_from_result == "status_report":
+                 result_for_log = tool_results.get("report_content", result_for_log)
 
-            step_context_update = f"\n--- Step {step_num} ---\nAction: Use Tool '{tool_name}', Action '{tool_action}'\nParams: {json.dumps(params, ensure_ascii=False)}\nResult Status: {tool_status}\nResult:\n```json\n{result_display}\n```\n"
+            result_display_str = "(No result field)"
+            try:
+                if isinstance(result_for_log, str):
+                    result_display_str = result_for_log # Keep string as is (e.g., status report)
+                else:
+                    # Attempt to pretty-print JSON if possible
+                    result_display_str = json.dumps(result_for_log, indent=2, ensure_ascii=False)
+            except Exception:
+                result_display_str = str(result_for_log) # Fallback to string representation
+
+            # Store summary for history (limit length)
+            summary_limit = 500
+            result_summary_for_history = result_display_str[:summary_limit] + ("..." if len(result_display_str) > summary_limit else "")
+            if tool_error: # Prepend error to summary if exists
+                 result_summary_for_history = f"Error: {tool_error}\n---\n{result_summary_for_history}"
+                 result_summary_for_history = result_summary_for_history[:summary_limit] + ("..." if len(result_summary_for_history) > summary_limit else "")
+            step_details_for_history["result_summary"] = result_summary_for_history
+
+            # Truncate display string for step context update (longer limit)
+            context_display_limit = 1000
+            result_display_context = result_display_str[:context_display_limit] + ("...(truncated)" if len(result_display_str) > context_display_limit else "")
+
+            # Decide if using code block based on content type
+            log_format = "```\n{}\n```" if isinstance(result_for_log, str) and not result_for_log.startswith("## Agent Status") else "```json\n{}\n```"
+
+            step_context_update = f"\n--- Step {step_num} ---\nAction: Use Tool '{tool_name}', Action '{tool_action_from_result if tool_action_from_result else '(implicit)'}'\nParams: {json.dumps(params, ensure_ascii=False)}\nResult Status: {tool_status}\nResult:\n{log_format.format(result_display_context)}\n"
             current_context += step_context_update
-            # Add tool action to memory metadata
-            self.memory.add_memory(f"Step {step_num} Tool Action & Result (Status: {tool_status}):\n{step_context_update}", {"type": "tool_result", "task_id": task.id, "step": step_num, "tool_name": tool_name, "action": tool_action, "result_status": tool_status, "params": json.dumps(params)})
+            # Add action from result to memory metadata
+            self.memory.add_memory(f"Step {step_num} Tool Action & Result (Status: {tool_status}):\n{step_context_update}", {"type": "tool_result", "task_id": task.id, "step": step_num, "tool_name": tool_name, "action": tool_action_from_result, "result_status": tool_status, "params": json.dumps(params)})
 
             # 4. Handle Tool Result Status
-            if tool_status == 'completed' or tool_status == 'success': # Handle 'success' from new tools
-                step_log.append(f"[INFO] Tool '{tool_name}' action '{tool_action}' completed."); step_status = "processing"; self.session_state["current_task_retries"] = 0;
+            if tool_status in ['completed', 'success', 'completed_malformed_output', 'completed_unserializable']: # Treat non-failure as okay for now
+                 if tool_status != 'completed' and tool_status != 'success':
+                     log.warning(f"Tool '{tool_name}' action '{tool_action_from_result}' finished with status: {tool_status}."); step_log.append(f"[WARNING] Tool '{tool_name}' ({tool_action_from_result}) status: {tool_status}.");
+                 else:
+                    step_log.append(f"[INFO] Tool '{tool_name}' action '{tool_action_from_result}' completed.");
+                 step_status = "processing"; self.session_state["current_task_retries"] = 0;
             elif tool_status == 'failed':
-                log.warning(f"Tool '{tool_name}' action '{tool_action}' failed: {tool_error}"); step_log.append(f"[ERROR] Tool '{tool_name}' ({tool_action}) failed: {tool_error}")
-                # Add error context for retry
-                error_context = f"\n--- Step {step_num} Tool Error (Retry {current_retries+1}/{config.AGENT_MAX_STEP_RETRIES}): Tool={tool_name}, Action={tool_action}, Error={tool_error} ---"
+                log.warning(f"Tool '{tool_name}' action '{tool_action_from_result}' failed: {tool_error}"); step_log.append(f"[ERROR] Tool '{tool_name}' ({tool_action_from_result}) failed: {tool_error}")
+                error_context = f"\n--- Step {step_num} Tool Error (Retry {current_retries+1}/{config.AGENT_MAX_STEP_RETRIES}): Tool={tool_name}, Action={tool_action_from_result}, Error={tool_error} ---"
                 current_context += error_context
-                self.memory.add_memory(f"Step {step_num} Tool Error: {tool_error}", {"type": "agent_error", "task_id": task.id, "step": step_num, "error_subtype": "tool_execution_error", "tool_name": tool_name, "action": tool_action})
+                self.memory.add_memory(f"Step {step_num} Tool Error: {tool_error}", {"type": "agent_error", "task_id": task.id, "step": step_num, "error_subtype": "tool_execution_error", "tool_name": tool_name, "action": tool_action_from_result})
                 if current_retries < config.AGENT_MAX_STEP_RETRIES:
                      self.session_state["current_task_retries"] = current_retries + 1; log.warning(f"Incrementing retry count to {current_retries + 1}."); step_status = "error_retry"
                 else:
-                    log.error(f"Max retries reached after tool failure for task {task.id}. Failing."); fail_reason = f"Failed after {step_num} steps. Max retries on tool failure: Tool={tool_name}, Action={tool_action}, Error={tool_error}"
+                    log.error(f"Max retries reached after tool failure for task {task.id}. Failing."); fail_reason = f"Failed after {step_num} steps. Max retries on tool failure: Tool={tool_name}, Action={tool_action_from_result}, Error={tool_error}"
                     self.task_queue.update_task(task.id, "failed", reflections=fail_reason); task_status_updated_this_step = True; step_status = "failed"
                     failed_task_obj = self.task_queue.get_task(task.id)
                     if failed_task_obj: self._handle_task_completion_or_failure(failed_task_obj) # Call helper
                     self.session_state["current_task_id"] = None; self.session_state["investigation_context"] = ""; self.session_state["current_task_retries"] = 0
-            else: # Handle other statuses like completed_malformed_output, completed_unserializable
-                log.warning(f"Tool '{tool_name}' action '{tool_action}' finished with status: {tool_status}. Treating as processing step for now.");
-                step_log.append(f"[WARNING] Tool '{tool_name}' ({tool_action}) status: {tool_status}.");
-                step_status = "processing"; self.session_state["current_task_retries"] = 0
+            else: # Unknown tool status
+                log.error(f"Tool '{tool_name}' action '{tool_action_from_result}' returned UNKNOWN status: {tool_status}. Failing step."); step_log.append(f"[CRITICAL] Tool '{tool_name}' ({tool_action_from_result}) unknown status: {tool_status}")
+                step_status = "failed" # Treat unknown status as failure
+                fail_reason = f"Failed after {step_num} steps due to unknown tool status '{tool_status}' from tool {tool_name} ({tool_action_from_result})."
+                self.task_queue.update_task(task.id, "failed", reflections=fail_reason); task_status_updated_this_step = True;
+                failed_task_obj = self.task_queue.get_task(task.id)
+                if failed_task_obj: self._handle_task_completion_or_failure(failed_task_obj)
+                self.session_state["current_task_id"] = None; self.session_state["investigation_context"] = ""; self.session_state["current_task_retries"] = 0
+
 
         elif action_type == "final_answer":
             log.info("[ACTION] Provide Final Answer."); step_log.append("[ACTION] Provide Final Answer.")
             answer = action.get("answer", "").strip(); reflections = action.get("reflections", "").strip(); final_answer_text = answer
+            step_details_for_history["result_status"] = "completed"
+            step_details_for_history["result_summary"] = f"Final Answer Provided:\n{answer[:500]}" + ("..." if len(answer) > 500 else "")
             print("\n" + "="*15 + f" FINAL ANSWER (Task {task.id}) " + "="*15); print(answer); print("="* (34+len(str(task.id))) + "\n")
             result_payload = {"answer": answer, "steps_taken": step_num}
             self.task_queue.update_task(task.id, "completed", result=result_payload, reflections=reflections); task_status_updated_this_step = True; step_status = "completed"
@@ -627,6 +775,7 @@ REFLECTIONS: <Optional thoughts.>
             if completed_task_obj: self._handle_task_completion_or_failure(completed_task_obj) # Call helper
             self.session_state["current_task_id"] = None; self.session_state["investigation_context"] = ""; self.session_state["current_task_retries"] = 0
 
+
         # 5. Update Context and State
         if step_status in ["processing", "error_retry"]:
             context_limit = config.CONTEXT_TRUNCATION_LIMIT
@@ -636,11 +785,27 @@ REFLECTIONS: <Optional thoughts.>
              self.session_state.pop(f"task_{task.id}_step", None)
              with self._state_lock: self.session_state["user_suggestion_move_on_pending"] = False # Clear flag on task end
 
-        self.save_session_state()
         step_duration = time.time() - step_start_time; step_log.append(f"Step {step_num} duration: {step_duration:.2f}s. Step Status: {step_status}")
+        step_details_for_history["log_snippet"] = "\n".join(step_log[-5:]) # Store last few log lines for history
+
+        # Add completed step details to history deque
+        with self._state_lock:
+            self.session_state["last_step_details"].append(step_details_for_history)
+            # Ensure UI state's history matches session state immediately
+            self._ui_update_state["step_history"] = list(self.session_state["last_step_details"])
+
+
+        self.save_session_state() # Save state including updated history
         final_task_status_obj = self.task_queue.get_task(task.id); final_task_status = final_task_status_obj.status if final_task_status_obj else "unknown"
 
-        # Retrieve memories for UI display (uses memory's method)
+        # --- MODIFIED: Fetch dependent tasks for UI ---
+        dependent_tasks_list = []
+        if self.session_state.get("current_task_id"):
+            dependent_tasks = self.task_queue.get_dependent_tasks(self.session_state["current_task_id"])
+            dependent_tasks_list = [{"id": dt.id, "description": dt.description} for dt in dependent_tasks]
+
+
+        # Retrieve memories for UI display (unchanged)
         ui_memory_query = f"Memories relevant to just completed step {step_num} of task {task.id}. Action taken: {action_type}. Status: {step_status}"
         recent_memories_for_ui, _ = self.memory.retrieve_and_rerank_memories(
             query=ui_memory_query,
@@ -650,17 +815,23 @@ REFLECTIONS: <Optional thoughts.>
             n_final=5
         )
 
+        # --- MODIFIED: Return updated state structure for UI ---
         return {
             "status": final_task_status,
             "log": "\n".join(step_log),
             "current_task_id": self.session_state.get("current_task_id"),
             "current_task_desc": task.description if self.session_state.get("current_task_id") else "None",
+            "thinking": thinking_to_store, # <<< New
+            "dependent_tasks": dependent_tasks_list, # <<< New
+            "last_action_type": action_type, # <<< New
+            "last_tool_results": tool_results_for_ui, # <<< New (raw dict)
             "recent_memories": recent_memories_for_ui,
-            "last_web_content": self.session_state.get("last_web_browse_content", "(No recent web browse)"),
-            "final_answer": final_answer_text
+            "last_web_content": self.session_state.get("last_web_browse_content", "(No recent web browse)"), # Keep for now
+            "final_answer": final_answer_text,
+            "step_history": list(self.session_state.get("last_step_details", [])), # <<< New: Include updated history
         }
+    # --- END MODIFICATION ---
 
-    # --- NEW HELPER for common task end logic ---
     def _handle_task_completion_or_failure(self, task: Task):
         """Handles post-task logic like summarization and identity revision."""
         log.info(f"Handling completion/failure for task {task.id} (Status: {task.status})")
@@ -676,9 +847,16 @@ REFLECTIONS: <Optional thoughts.>
         else:
             log.info(f"Agent paused, skipping identity revision after {task.status} task.")
 
+    # --- MODIFIED: Update UI state fields on idle/task change ---
     def process_one_step(self) -> Dict[str, Any]:
         log.info("Processing one autonomous step..."); step_result_log = ["Attempting one step..."]
-        default_state = {"status": "idle", "log": "Idle.", "current_task_id": None, "current_task_desc": "None", "recent_memories": [], "last_web_content": self.session_state.get("last_web_browse_content", "(None)"), "final_answer": None}
+        # --- MODIFIED: Define default state including new fields ---
+        default_state = {
+            "status": "idle", "log": "Idle.", "current_task_id": None, "current_task_desc": "None",
+            "thinking": "(Agent Idle)", "dependent_tasks": [], "last_action_type": None, "last_tool_results": None,
+            "recent_memories": [], "last_web_content": self.session_state.get("last_web_browse_content", "(None)"),
+            "final_answer": None, "step_history": list(self.session_state.get("last_step_details", []))
+        }
         try:
             task_id_to_process = self.session_state.get("current_task_id"); task: Optional[Task] = None
             if task_id_to_process:
@@ -688,6 +866,9 @@ REFLECTIONS: <Optional thoughts.>
                     task = None;
                     self.session_state["current_task_id"] = None; self.session_state["investigation_context"] = ""; self.session_state["current_task_retries"] = 0
                     with self._state_lock: self.session_state["user_suggestion_move_on_pending"] = False # Clear flag if task ended unexpectedly
+                    # --- MODIFIED: Update UI state on reset ---
+                    self._update_ui_state(**default_state) # Use spread operator
+                    self.save_session_state()
             if not task:
                 task = self.task_queue.get_next_task()
                 if task:
@@ -696,6 +877,25 @@ REFLECTIONS: <Optional thoughts.>
                     self.session_state["investigation_context"] = f"Objective: {task.description}\n"; self.session_state.pop(f"task_{task.id}_step", None); self.session_state["current_task_retries"] = 0
                     with self._state_lock: self.session_state["user_suggestion_move_on_pending"] = False # Ensure flag is clear on new task start
                     self.save_session_state(); task = self.task_queue.get_task(task.id) # Reload task after update
+
+                    # --- MODIFIED: Fetch dependents for new task and update UI ---
+                    dependent_tasks = self.task_queue.get_dependent_tasks(task.id)
+                    dependent_tasks_list = [{"id": dt.id, "description": dt.description} for dt in dependent_tasks]
+                    self._update_ui_state(
+                        status="starting", # Indicate starting state
+                        log="\n".join(step_result_log),
+                        current_task_id=task.id,
+                        current_task_desc=task.description,
+                        thinking="(Starting task...)",
+                        dependent_tasks=dependent_tasks_list,
+                        last_action_type=None,
+                        last_tool_results=None,
+                        recent_memories=[],
+                        final_answer=None,
+                         step_history=list(self.session_state.get("last_step_details", [])) # Include history
+                    )
+                    return self.get_ui_update_state() # Return starting state immediately
+
                 else:
                     log.info("No runnable tasks found."); step_result_log.append("No runnable tasks found.")
                     # Idle task generation logic
@@ -705,18 +905,19 @@ REFLECTIONS: <Optional thoughts.>
                         if generated_desc: step_result_log.append(f"Generated idle task: {generated_desc[:60]}...")
                         else: step_result_log.append("No new idle tasks generated.")
 
-                    self._update_ui_state(status="idle", log="\n".join(step_result_log), current_task_id=None, current_task_desc="None")
+                    self._update_ui_state(**default_state, log="\n".join(step_result_log)) # Update log specifically
                     return self.get_ui_update_state() # Return idle state
 
             if task and task.status == "in_progress": # Ensure task is still valid and in progress
-                step_result = self._execute_step(task);
-                self._update_ui_state(**step_result); return self.get_ui_update_state()
+                step_result = self._execute_step(task); # This now returns the full UI state dict
+                self._update_ui_state(**step_result); # Update internal state based on step result
+                return self.get_ui_update_state()
             elif task:
                  log.warning(f"Task {task.id} found but not in expected 'in_progress' state (State: {task.status}). Resetting."); step_result_log.append(f"Task {task.id} state unexpected: {task.status}. Resetting.")
                  self.session_state["current_task_id"] = None; self.session_state["investigation_context"] = ""; self.session_state["current_task_retries"] = 0
                  with self._state_lock: self.session_state["user_suggestion_move_on_pending"] = False
                  self.save_session_state()
-                 self._update_ui_state(status="idle", log="\n".join(step_result_log), current_task_id=None, current_task_desc="None")
+                 self._update_ui_state(**default_state, log="\n".join(step_result_log)) # Update log
                  return self.get_ui_update_state()
             else:
                  log.error("Task became None unexpectedly before step execution."); step_result_log.append("[ERROR] Task lost before execution.");
@@ -731,9 +932,11 @@ REFLECTIONS: <Optional thoughts.>
                  self.session_state["current_task_id"] = None; self.session_state["investigation_context"] = ""; self.session_state["current_task_retries"] = 0
                  with self._state_lock: self.session_state["user_suggestion_move_on_pending"] = False
                  self.save_session_state()
-            self._update_ui_state(status="critical_error", log="\n".join(step_result_log), current_task_id=None, current_task_desc="None"); return self.get_ui_update_state()
+            # --- MODIFIED: Reset UI state on critical error ---
+            self._update_ui_state(**default_state, status="critical_error", log="\n".join(step_result_log));
+            return self.get_ui_update_state()
+    # --- END MODIFICATION ---
 
-    # --- MODIFIED: Prompt for task generation updated ---
     def generate_new_tasks(self, max_new_tasks: int = 3, last_user_message: Optional[str] = None, last_assistant_response: Optional[str] = None) -> Optional[str]:
         log.info("\n--- Attempting to Generate New Tasks ---"); context_source = ""; context_query = ""; mem_query = ""; critical_evaluation_instruction = ""
         if last_user_message and last_assistant_response: context_source = "last chat interaction"; context_query = f"Last User: {last_user_message}\nLast Assistant: {last_assistant_response}"; mem_query = f"Context relevant to last chat: {last_user_message}"; critical_evaluation_instruction = "\n**Critically Evaluate Need:** Based *specifically* on the **Last Interaction**, is a background task *truly necessary*? Output `[]` if not."
@@ -758,7 +961,7 @@ REFLECTIONS: <Optional thoughts.>
         existing_tasks_info = [{"id": t.id, "description": t.description, "status": t.status} for t in self.task_queue.tasks.values()]; active_tasks_summary = "\n".join([f"- ID: {t['id']} (Status: {t['status']}) Desc: {t['description'][:100]}..." for t in existing_tasks_info if t['status'] in ['pending', 'in_progress']]) or "None"
         completed_failed_summary = "\n".join([f"- ID: {t['id']} (Status: {t['status']}) Desc: {t['description'][:100]}..." for t in existing_tasks_info if t['status'] in ['completed', 'failed']])[-1000:]; valid_existing_task_ids = set(t['id'] for t in existing_tasks_info)
 
-        # --- MODIFIED PROMPT ---
+        # --- MODIFIED PROMPT (no functional change needed for UI) ---
         prompt = f"""You are the planning component of an AI agent. Generate new, actionable tasks based on state, history, and identity.
 **Agent's Current Identity:**
 {self.identity_statement}
@@ -771,14 +974,15 @@ REFLECTIONS: <Optional thoughts.>
 **Recently Finished Tasks (for context):**
 {completed_failed_summary}
 {critical_evaluation_instruction}
-**Your Task:** Review all info (paying attention to recency of memories). Identify gaps/next steps relevant to Context & Identity. Generate up to {max_new_tasks} new, specific, actionable tasks that require using the agent's tools (web search/browse, memory search/write, file read/write/list). AVOID DUPLICATES of pending/in-progress tasks. Assign priority (1-10, consider identity). Add necessary `depends_on` using existing IDs only. Suggest follow-up, refinement, or (max 1) exploratory tasks.
+**Your Task:** Review all info (paying attention to recency of memories). Identify gaps/next steps relevant to Context & Identity. Generate up to {max_new_tasks} new, specific, actionable tasks that require using the agent's tools (web search/browse, memory search/write, file read/write/list, status report). AVOID DUPLICATES of pending/in-progress tasks. Assign priority (1-10, consider identity). Add necessary `depends_on` using existing IDs only. Suggest follow-up, refinement, or (max 1) exploratory tasks.
 **Guidelines:** Actionable (verb start, often implying tool use), Specific, Novel, Relevant (to context/identity), Concise.
 **Output Format (Strict JSON):** Provide *only* a valid JSON list of objects (or `[]`). Example:
 ```json
 [
   {{"description": "Search the web for recent news on AI agent memory techniques.", "priority": 7}},
   {{"description": "Read the contents of the 'summary.txt' artifact.", "priority": 6, "depends_on": ["xyz"]}},
-  {{"description": "Write a brief reflection on the challenges encountered in task [abc] to memory.", "priority": 4, "depends_on": ["abc"]}}
+  {{"description": "Write a brief reflection on the challenges encountered in task [abc] to memory.", "priority": 4, "depends_on": ["abc"]}},
+  {{"description": "Get the current agent status report.", "priority": 2}}
 ]
 ```"""
         # --- END MODIFIED PROMPT ---

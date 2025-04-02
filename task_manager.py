@@ -1,9 +1,10 @@
+# FILE: task_manager.py
 # autonomous_agent/task_manager.py
 import os
 import json
 import datetime
 from typing import List, Dict, Any, Optional
-from collections import defaultdict # <<<--- ADD IMPORT
+from collections import defaultdict
 
 from data_structures import Task
 from config import TASK_QUEUE_PATH
@@ -21,7 +22,6 @@ class TaskQueue:
         self.load_queue()
 
     def load_queue(self):
-        # ... (implementation unchanged) ...
         if os.path.exists(self.queue_path):
             try:
                 with open(self.queue_path, 'r', encoding='utf-8') as f: content = f.read()
@@ -40,7 +40,6 @@ class TaskQueue:
         else: log.info(f"Task queue file '{self.queue_path}' not found. Starting fresh."); self.tasks = {}
 
     def save_queue(self):
-        # ... (implementation unchanged) ...
         try:
             with open(self.queue_path, 'w', encoding='utf-8') as f:
                 # Sort primarily by creation date for consistent file output
@@ -49,7 +48,6 @@ class TaskQueue:
         except Exception as e: log.error(f"Error saving task queue to '{self.queue_path}': {e}")
 
     def add_task(self, task: Task) -> Optional[str]:
-        # ... (implementation unchanged) ...
         if not isinstance(task, Task): log.error(f"Attempted to add non-Task object: {task}"); return None
         # Simple duplicate check based on description (could be improved with embeddings)
         lower_desc = task.description.strip().lower()
@@ -61,7 +59,6 @@ class TaskQueue:
         log.info(f"Task added: {task.id} - '{task.description[:60]}...' (Prio: {task.priority}, Depends: {task.depends_on})"); return task.id
 
     def get_next_task(self) -> Optional[Task]:
-        # ... (implementation unchanged) ...
         available = []
         tasks_list = list(self.tasks.values())
         for task in tasks_list:
@@ -80,15 +77,8 @@ class TaskQueue:
         return sorted(available, key=lambda t: (-t.priority, t.created_at))[0]
 
     def update_task(self, task_id: str, status: str, result: Any = None, reflections: Optional[str] = None):
-        # ... (implementation unchanged) ...
         if task_id in self.tasks:
             task = self.tasks[task_id]
-            # Avoid saving if only status changed redundantly
-            # status_changed = task.status != status
-            # result_changed = task.result != result if result is not None else False # Simplistic check
-            # reflections_changed = task.reflections != reflections if reflections is not None else False
-            # if not status_changed and not result_changed and not reflections_changed: return # No change detected
-
             task.status = status
             log.info(f"Task {task_id} status updated to: {status}")
             if status in ["completed", "failed"]: task.completed_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -98,11 +88,9 @@ class TaskQueue:
         else: log.error(f"Cannot update task - ID '{task_id}' not found.")
 
     def get_task(self, task_id: str) -> Optional[Task]:
-        # ... (implementation unchanged) ...
         return self.tasks.get(task_id)
 
     def set_priority(self, task_id: str, priority: int) -> bool:
-        # ... (implementation unchanged) ...
         if task_id in self.tasks:
             task = self.tasks[task_id]
             new_priority = max(1, min(10, int(priority))) # Clamp priority 1-10
@@ -112,6 +100,17 @@ class TaskQueue:
         else: log.error(f"Cannot set priority - Task ID '{task_id}' not found."); return False
 
     # --- NEW METHOD ---
+    def get_dependent_tasks(self, task_id: str) -> List[Task]:
+        """Returns a list of tasks that depend on the given task_id."""
+        if not task_id: return []
+        dependent = []
+        for task in self.tasks.values():
+            if task_id in task.depends_on:
+                dependent.append(task)
+        log.debug(f"Found {len(dependent)} tasks dependent on {task_id}.")
+        # Sort by priority/creation for consistent display
+        return sorted(dependent, key=lambda t: (-t.priority, t.created_at))
+
     def get_tasks_by_status(self, statuses: List[str]) -> List[Task]:
         """Returns a list of tasks matching the provided statuses."""
         if not statuses: return []
@@ -119,7 +118,6 @@ class TaskQueue:
         log.debug(f"Found {len(matched_tasks)} tasks with statuses: {statuses}")
         return matched_tasks
 
-    # --- NEW METHOD ---
     def get_all_tasks_structured(self) -> Dict[str, List[Dict[str, Any]]]:
         """ Returns tasks categorized by status and formatted for UI display. """
         categorized: Dict[str, List[Task]] = defaultdict(list)
