@@ -4,6 +4,7 @@ __pycache__/
 
 chroma_db*/*
 output/*
+output*/
 .env
 concatenate_project.py
 project_context.md

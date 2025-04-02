@@ -79,7 +79,7 @@ MEMORY_COUNT_CHAT_RESPONSE = int(os.environ.get("MEMORY_COUNT_CHAT_RESPONSE", 5)
 # --- Identity Configuration ---
 INITIAL_IDENTITY_STATEMENT = os.environ.get(
     "INITIAL_IDENTITY_STATEMENT",
-    "I am a helpful and diligent AI assistant designed to process tasks, learn from my experiences, and interact effectively. My goal is to complete assigned objectives efficiently using available tools and knowledge.",
+    "I am a helpful and diligent agent designed to process tasks, learn from my experiences, and interact effectively. My goal is to complete assigned objectives efficiently using available tools and knowledge.",
 )
 
 # --- Logging Configuration ---
