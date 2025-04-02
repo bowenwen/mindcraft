@@ -903,7 +903,8 @@ REFLECTIONS: <Optional thoughts.>
                     # Idle task generation logic
                     if not self.session_state.get("current_task_id"): # Redundant check, but safe
                         log.info("Agent idle, considering generating tasks...");
-                        generated_desc = self.generate_new_tasks(max_new_tasks=3)
+                        # Pass 'idle' trigger context for special handling
+                        generated_desc = self.generate_new_tasks(max_new_tasks=3, trigger_context='idle')
                         if generated_desc: step_result_log.append(f"Generated idle task: {generated_desc[:60]}...")
                         else: step_result_log.append("No new idle tasks generated.")
 
@@ -951,46 +952,99 @@ REFLECTIONS: <Optional thoughts.>
             return self.get_ui_update_state()
     # --- END MODIFICATION ---
 
-    def generate_new_tasks(self, max_new_tasks: int = 3, last_user_message: Optional[str] = None, last_assistant_response: Optional[str] = None) -> Optional[str]:
-        log.info("\n--- Attempting to Generate New Tasks ---"); context_source = ""; context_query = ""; mem_query = ""; critical_evaluation_instruction = ""
-        if last_user_message and last_assistant_response: context_source = "last chat interaction"; context_query = f"Last User: {last_user_message}\nLast Assistant: {last_assistant_response}"; mem_query = f"Context relevant to last chat: {last_user_message}"; critical_evaluation_instruction = "\n**Critically Evaluate Need:** Based *specifically* on the **Last Interaction**, is a background task *truly necessary*? Output `[]` if not."
-        else: context_source = "general agent state"; context_query = "General status. Consider logical follow-up/exploration based on completed tasks, idle state, and my identity."; mem_query = "Recent activities, conclusions, errors, reflections, summaries, identity revisions."; critical_evaluation_instruction = "\n**Critically Evaluate Need:** Are new tasks genuinely needed for exploration/follow-up, consistent with identity? Output `[]` if not."
-        log.info(f"Retrieving context for task generation (Source: {context_source})...");
-        recent_mems, _ = self.memory.retrieve_and_rerank_memories(
-            query=mem_query,
-            task_description="Task Generation Context",
-            context=context_query,
-            identity_statement=self.identity_statement,
-            n_results=config.MEMORY_COUNT_NEW_TASKS * 2,
-            n_final=config.MEMORY_COUNT_NEW_TASKS
-        )
-        mem_summary_list = []
-        for m in recent_mems:
-            relative_time = format_relative_time(m['metadata'].get('timestamp'))
-            mem_type = m['metadata'].get('type','mem')
-            snippet = m['content'][:150].strip().replace('\n', ' ')
-            mem_summary_list.append(f"- [{relative_time}] {mem_type}: {snippet}...")
-        mem_summary = "\n".join(mem_summary_list) if mem_summary_list else "None"
+    # --- MODIFIED: Generate New Tasks ---
+    def generate_new_tasks(
+        self,
+        max_new_tasks: int = 3,
+        last_user_message: Optional[str] = None,
+        last_assistant_response: Optional[str] = None,
+        trigger_context: str = 'unknown' # Added: 'idle', 'chat', or 'unknown'
+    ) -> Optional[str]:
+        log.info(f"\n--- Attempting to Generate New Tasks (Trigger: {trigger_context}) ---")
 
-        existing_tasks_info = [{"id": t.id, "description": t.description, "status": t.status} for t in self.task_queue.tasks.values()]; active_tasks_summary = "\n".join([f"- ID: {t['id']} (Status: {t['status']}) Desc: {t['description'][:100]}..." for t in existing_tasks_info if t['status'] in ['pending', 'in_progress']]) or "None"
-        completed_failed_summary = "\n".join([f"- ID: {t['id']} (Status: {t['status']}) Desc: {t['description'][:100]}..." for t in existing_tasks_info if t['status'] in ['completed', 'failed']])[-1000:]; valid_existing_task_ids = set(t['id'] for t in existing_tasks_info)
+        # Check if memory is empty
+        memory_is_empty = False
+        memory_count = 0
+        try:
+            memory_count = self.memory.collection.count()
+            memory_is_empty = (memory_count == 0)
+            log.info(f"Memory collection count: {memory_count}. Is empty: {memory_is_empty}")
+        except Exception as e:
+            log.error(f"Failed to get memory count: {e}. Assuming not empty.")
+            memory_is_empty = False # Be conservative on error
 
-        # --- Use prompt from prompts.py ---
-        # Create dictionary for formatting
-        prompt_vars = {
-            "identity_statement": self.identity_statement,
-            "context_query": context_query,
-            "mem_summary": mem_summary,
-            "active_tasks_summary": active_tasks_summary,
-            "completed_failed_summary": completed_failed_summary,
-            "critical_evaluation_instruction": critical_evaluation_instruction,
-            "max_new_tasks": max_new_tasks
-        }
-        prompt = prompts.GENERATE_NEW_TASKS_PROMPT.format(**prompt_vars)
-        # ---
+        # Determine which prompt and task count to use
+        use_initial_creative_prompt = (memory_is_empty and trigger_context == 'idle')
+        max_tasks_to_generate = config.INITIAL_NEW_TASK_N if use_initial_creative_prompt else max_new_tasks
+        prompt_template = prompts.INITIAL_CREATIVE_TASK_GENERATION_PROMPT if use_initial_creative_prompt else prompts.GENERATE_NEW_TASKS_PROMPT
 
-        log.info(f"Asking {self.ollama_chat_model} to generate up to {max_new_tasks} new tasks..."); llm_response = call_ollama_api(prompt, self.ollama_chat_model, self.ollama_base_url, timeout=180)
-        # --- Parsing logic unchanged ---
+        log.info(f"Using {'Initial Creative' if use_initial_creative_prompt else 'Standard'} Task Generation Prompt. Max tasks: {max_tasks_to_generate}")
+
+        # Prepare context for the selected prompt
+        prompt_vars = {}
+        if use_initial_creative_prompt:
+            # Minimal context for initial prompt
+            prompt_vars = {
+                "identity_statement": self.identity_statement,
+                "tool_desc": self.get_available_tools_description(),
+                "max_new_tasks": max_tasks_to_generate
+            }
+            context_query = "Initial run with empty memory. Generate creative starting tasks." # For logging
+        else:
+            # Normal context gathering for standard prompt
+            context_source = ""; context_query = ""; mem_query = ""; critical_evaluation_instruction = ""
+            if trigger_context == 'chat' and last_user_message and last_assistant_response:
+                 context_source = "last chat interaction"; context_query = f"Last User: {last_user_message}\nLast Assistant: {last_assistant_response}"; mem_query = f"Context relevant to last chat: {last_user_message}"; critical_evaluation_instruction = "\n**Critically Evaluate Need:** Based *specifically* on the **Last Interaction**, is a background task *truly necessary*? Output `[]` if not."
+            else: # Idle or unknown trigger with non-empty memory
+                 context_source = "general agent state"; context_query = "General status. Consider logical follow-up/exploration based on completed tasks, idle state, and my identity."; mem_query = "Recent activities, conclusions, errors, reflections, summaries, identity revisions."; critical_evaluation_instruction = "\n**Critically Evaluate Need:** Are new tasks genuinely needed for exploration/follow-up, consistent with identity? Output `[]` if not."
+            log.info(f"Retrieving context for task generation (Source: {context_source})...");
+            recent_mems, _ = self.memory.retrieve_and_rerank_memories(
+                query=mem_query,
+                task_description="Task Generation Context",
+                context=context_query,
+                identity_statement=self.identity_statement,
+                n_results=config.MEMORY_COUNT_NEW_TASKS * 2,
+                n_final=config.MEMORY_COUNT_NEW_TASKS
+            )
+            mem_summary_list = []
+            for m in recent_mems:
+                relative_time = format_relative_time(m['metadata'].get('timestamp'))
+                mem_type = m['metadata'].get('type','mem')
+                snippet = m['content'][:150].strip().replace('\n', ' ')
+                mem_summary_list.append(f"- [{relative_time}] {mem_type}: {snippet}...")
+            mem_summary = "\n".join(mem_summary_list) if mem_summary_list else "None"
+
+            existing_tasks_info = [{"id": t.id, "description": t.description, "status": t.status} for t in self.task_queue.tasks.values()]; active_tasks_summary = "\n".join([f"- ID: {t['id']} (Status: {t['status']}) Desc: {t['description'][:100]}..." for t in existing_tasks_info if t['status'] in ['pending', 'in_progress']]) or "None"
+            completed_failed_summary = "\n".join([f"- ID: {t['id']} (Status: {t['status']}) Desc: {t['description'][:100]}..." for t in existing_tasks_info if t['status'] in ['completed', 'failed']])[-1000:];
+
+            prompt_vars = {
+                "identity_statement": self.identity_statement,
+                "context_query": context_query,
+                "mem_summary": mem_summary,
+                "active_tasks_summary": active_tasks_summary,
+                "completed_failed_summary": completed_failed_summary,
+                "critical_evaluation_instruction": critical_evaluation_instruction,
+                "max_new_tasks": max_tasks_to_generate # Use the determined max
+            }
+
+        # Add missing keys required by the standard prompt if using creative prompt
+        # (They won't be used by the creative prompt, but keeps format consistent)
+        if use_initial_creative_prompt:
+            prompt_vars.setdefault("context_query", "N/A (Initial Run)")
+            prompt_vars.setdefault("mem_summary", "None (Initial Run)")
+            prompt_vars.setdefault("active_tasks_summary", "None (Initial Run)")
+            prompt_vars.setdefault("completed_failed_summary", "None (Initial Run)")
+            prompt_vars.setdefault("critical_evaluation_instruction", "N/A (Initial Run)")
+            prompt_vars.setdefault("tool_desc", self.get_available_tools_description()) # Ensure tool_desc is present
+
+
+        # Format the selected prompt
+        prompt = prompt_template.format(**prompt_vars)
+
+        # Call LLM and parse results (logic remains mostly the same)
+        log.info(f"Asking {self.ollama_chat_model} to generate up to {max_tasks_to_generate} new tasks...");
+        llm_response = call_ollama_api(prompt, self.ollama_chat_model, self.ollama_base_url, timeout=180)
+
         if not llm_response: log.error("LLM failed task gen."); return None
         first_task_desc_added = None; new_tasks_added = 0
         try:
@@ -1002,22 +1056,29 @@ REFLECTIONS: <Optional thoughts.>
             json_str = llm_response[list_start : list_end + 1]; suggested_tasks = json.loads(json_str)
             if not isinstance(suggested_tasks, list): log.warning(f"LLM task gen not list: {suggested_tasks}"); return None
             if not suggested_tasks: log.info("LLM suggested no new tasks."); return None
+
             log.info(f"LLM suggested {len(suggested_tasks)} tasks. Validating..."); current_task_ids_in_batch = set()
+            # Need existing tasks info even for initial run to get valid IDs
+            existing_tasks_info = [{"id": t.id, "description": t.description, "status": t.status} for t in self.task_queue.tasks.values()]
             active_task_descriptions = {t['description'].strip().lower() for t in existing_tasks_info if t['status'] in ['pending', 'in_progress']}
+            valid_existing_task_ids = set(t['id'] for t in existing_tasks_info)
+
             for task_data in suggested_tasks:
                 if not isinstance(task_data, dict): continue
                 description = task_data.get("description")
                 if not description or not isinstance(description, str) or not description.strip(): continue
                 description = description.strip()
                 if description.lower() in active_task_descriptions: log.warning(f"Skipping duplicate task: '{description[:80]}...'"); continue
-                priority = task_data.get("priority", 5);
+                priority = task_data.get("priority", 3 if use_initial_creative_prompt else 5); # Lower default priority for initial creative tasks
                 try: priority = max(1, min(10, int(priority)));
-                except: priority = 5
+                except: priority = 3 if use_initial_creative_prompt else 5
                 dependencies_raw = task_data.get("depends_on"); validated_dependencies = []
                 if isinstance(dependencies_raw, list):
                     for dep_id in dependencies_raw:
                         dep_id_str = str(dep_id).strip();
-                        if dep_id_str in valid_existing_task_ids or dep_id_str in current_task_ids_in_batch: validated_dependencies.append(dep_id_str)
+                        # Dependencies can reference other tasks created *in this batch* or existing ones
+                        if dep_id_str in valid_existing_task_ids or dep_id_str in current_task_ids_in_batch:
+                             validated_dependencies.append(dep_id_str)
                         else: log.warning(f"Dependency '{dep_id_str}' for new task not found. Ignoring.")
 
                 new_task = Task(description, priority, depends_on=validated_dependencies or None); new_task_id = self.task_queue.add_task(new_task)
@@ -1025,10 +1086,11 @@ REFLECTIONS: <Optional thoughts.>
                      if new_tasks_added == 0: first_task_desc_added = description
                      new_tasks_added += 1; active_task_descriptions.add(description.lower()); valid_existing_task_ids.add(new_task_id); current_task_ids_in_batch.add(new_task_id)
                      log.info(f"Added Task {new_task_id}: '{description[:60]}...' (Prio: {priority}, Depends: {validated_dependencies})")
-                if new_tasks_added >= max_new_tasks: break
+                if new_tasks_added >= max_tasks_to_generate: break # Use the determined max here
         except json.JSONDecodeError as e: log.error(f"Failed JSON parse task gen: {e}\nLLM Resp:\n{llm_response}\n---"); return None
         except Exception as e: log.exception(f"Unexpected error task gen: {e}"); return None
         log.info(f"Finished Task Generation: Added {new_tasks_added} new tasks."); return first_task_desc_added
+    # --- END MODIFIED Generate New Tasks ---
 
     # --- Loop/Control Methods (unchanged) ---
     def _autonomous_loop(self, initial_delay: float = 2.0, step_delay: float = 5.0):

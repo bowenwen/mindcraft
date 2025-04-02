@@ -61,7 +61,7 @@ Summarize the execution of this agent task based on the log below. Focus on obje
 """
 
 
-# --- New Task Generation Prompt ---
+# --- New Task Generation Prompt (Standard) ---
 # Variables: {identity_statement}, {context_query}, {mem_summary}, {active_tasks_summary},
 #            {completed_failed_summary}, {critical_evaluation_instruction}, {max_new_tasks}
 # CORRECTED: Use single braces for .format() substitution
@@ -133,6 +133,63 @@ You are the planning component of an AI agent ({identity_statement}). Your role 
 ]
 ```
 """
+
+# --- NEW: Initial Creative Task Generation Prompt ---
+# Variables: {identity_statement}, {tool_desc}, {max_new_tasks}
+INITIAL_CREATIVE_TASK_GENERATION_PROMPT = """
+You are the creative planning core of an AI agent ({identity_statement}). This is the agent's first run or its memory is currently empty. Your objective is to kickstart the agent's activity by generating a diverse and imaginative set of initial tasks.
+
+**Agent's Identity:**
+{identity_statement}
+
+**Available Tools & Actions:**
+{tool_desc}
+
+**Current State:** Agent is idle. **Memory is empty.** No past activities to draw upon.
+
+**Your Task: Initial Creative Spark**
+Generate up to **{max_new_tasks}** diverse, creative, and engaging initial tasks that will help the agent explore its capabilities and potentially build useful knowledge or artifacts from scratch. Be imaginative!
+
+**Goals for Initial Tasks:**
+1.  **Maximum Diversity:** Generate tasks that are as different from each other as possible. Cover various domains: research, writing, coding, file management, self-reflection, status checks.
+2.  **Creative Tool Use:** Propose tasks that creatively combine or utilize the available tools (`web`, `memory`, `file`, `status`). Think beyond simple searches or writes.
+3.  **Exploration & Bootstrapping:** Aim for tasks that might lead to interesting discoveries or lay the foundation for future work (e.g., research a topic, then write a summary file; write a simple program).
+4.  **Actionability:** Ensure tasks have clear objectives and imply tool usage. Start descriptions with verbs.
+5.  **Standalone (Mostly):** Since there are no prior tasks, try to make these initial tasks runnable independently, or with simple dependencies *within this initial batch*.
+
+**Output Format (Strict JSON):** Provide *only* a valid JSON list of task objects (or `[]` if no tasks should be generated, though this is unlikely for the initial run). Assign a moderate priority (e.g., 3-6) unless a task seems foundational.
+
+**Example (Illustrating Creativity and Diversity):**
+```json
+[
+  {{
+    "description": "Search the web for the 'Drake Equation' and write its formula and a brief explanation to memory.",
+    "priority": 5
+  }},
+  {{
+    "description": "Write a short poem about the color blue and save it to a file named 'blue_poem.txt'.",
+    "priority": 4
+  }},
+  {{
+    "description": "Browse the main page of Wikipedia (en.wikipedia.org) and summarize the top 3 'In the news' items into a memory entry.",
+    "priority": 6
+  }},
+  {{
+    "description": "Create a file named 'project_ideas.md' and write down three potential project ideas this agent could work on.",
+    "priority": 5
+  }},
+  {{
+    "description": "List the files currently in the root of the artifact workspace.",
+    "priority": 3
+  }},
+  {{
+    "description": "Generate and record an agent status report.",
+    "priority": 2
+  }}
+]
+```
+"""
+
 
 # --- Session Reflection Prompt ---
 # Variables: {identity_statement}, {start_iso}, {end_iso}, {duration_minutes},

@@ -79,8 +79,9 @@ MEMORY_COUNT_CHAT_RESPONSE = int(os.environ.get("MEMORY_COUNT_CHAT_RESPONSE", 5)
 # --- Identity Configuration ---
 INITIAL_IDENTITY_STATEMENT = os.environ.get(
     "INITIAL_IDENTITY_STATEMENT",
-    "I am a helpful and diligent agent designed to process tasks, learn from my experiences, and interact effectively. My goal is to complete assigned objectives efficiently using available tools and knowledge.",
+    "I am a helpful and diligent agent designed to process tasks, learn from my experiences, and interact effectively. I am curious, playful, intelligent and driven. My overall goal is to complete assigned objectives efficiently using available tools and knowledge.",
 )
+INITIAL_NEW_TASK_N = int(os.environ.get("INITIAL_NEW_TASK_N", 6))
 
 # --- UI Configuration ---
 UI_STEP_HISTORY_LENGTH = int(os.environ.get("UI_STEP_HISTORY_LENGTH", 10))
