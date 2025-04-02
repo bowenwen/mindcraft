@@ -18,6 +18,7 @@ from config import (
 )
 # Import utilities needed for moved logic
 from utils import call_ollama_api, format_relative_time # <<<--- ADD IMPORTS
+import prompts # <<<--- IMPORT PROMPTS MODULE
 
 # Suggestion: Use logging module
 import logging
@@ -115,7 +116,7 @@ class AgentMemory:
             return memories
         except Exception as e: log.exception(f"Error retrieving raw memories from ChromaDB: {e}"); return []
 
-    # --- NEW (MOVED FROM AGENT) ---
+    # --- UPDATED to use prompt from prompts.py ---
     def retrieve_and_rerank_memories(
         self,
         query: str,
@@ -160,41 +161,27 @@ class AgentMemory:
             return sorted(filtered_candidates, key=lambda m: m.get('distance', float('inf'))), user_suggestion_content
 
         # --- Prepare prompt for LLM re-ranking ---
-        rerank_prompt = f"""You are an AI assistant helping an agent select the MOST useful memories for its current step. Goal: Choose the best memories to help the agent achieve its immediate goal, considering relevance, recency, and avoiding redundancy.
-
-**Agent's Stated Identity:**
-{identity_statement} # <<<--- Use passed identity
-
-**Current Task:**
-{task_description}
-
-**Agent's Current Context/Goal for this Step (Use this heavily for ranking):**
-{query}
-
-**Recent Conversation/Action History (Check for relevance!):**
-{context[-1000:]}
-
-**Candidate Memories (with index, relative time, distance, type, and content snippet):**\n"""
-        candidate_details = []
+        candidate_details_list = []
         for idx, mem in enumerate(filtered_candidates):
             meta_info = f"Type: {mem['metadata'].get('type', 'N/A')}"
             dist_info = f"Distance: {mem.get('distance', 'N/A'):.4f}"
             # Use format_relative_time utility
             relative_time = format_relative_time(mem['metadata'].get('timestamp'))
             content_snippet = mem['content'][:200].replace('\n', ' ') + "..."
-            candidate_details.append(f"--- Memory Index {idx} [{relative_time}] ({dist_info}) ---\nMetadata: {meta_info}\nContent Snippet: {content_snippet}\n---")
+            candidate_details_list.append(f"--- Memory Index {idx} [{relative_time}] ({dist_info}) ---\nMetadata: {meta_info}\nContent Snippet: {content_snippet}\n---")
 
-        rerank_prompt += "\n".join(candidate_details)
-        rerank_prompt += f"""\n\n**Instructions:** Review the **Agent's Current Context/Goal**, **Task**, **Identity**, and **History**. Based on this, identify the **{n_final} memories** (by index) from the list above that are MOST RELEVANT and MOST USEFUL for the agent to consider *right now*.
+        candidate_details_str = "\n".join(candidate_details_list)
 
-**CRITICAL Ranking Factors:**
-1.  **Relevance:** How directly does the memory address the **Current Context/Goal**?
-2.  **Recency:** How recently was the memory created (use the **[relative time]** provided)? More recent memories are often, but not always, more relevant.
-3.  **Novelty/Uniqueness:** Does the memory offer information not already present or obvious from other highly-ranked memories or the current context? Avoid selecting multiple memories that say essentially the same thing.
-
-**Balance these factors** to select the optimal set of {n_final} memories.
-
-**Output Format:** Provide *only* a comma-separated list of the numerical indices (starting from 0) of the {n_final} most relevant memories, ordered from most relevant to least relevant. Example: 3, 0, 7, 5"""
+        # --- Use prompt from prompts.py ---
+        rerank_prompt = prompts.RERANK_MEMORIES_PROMPT.format(
+            identity_statement=identity_statement,
+            task_description=task_description,
+            query=query,
+            context=context[-1000:], # Limit context size for prompt
+            candidate_details=candidate_details_str,
+            n_final=n_final
+        )
+        # ---
 
         # Use self.ollama_chat_model and self.ollama_base_url
         log.info(f"Asking {self.ollama_chat_model} to re-rank {len(filtered_candidates)} memories down to {n_final} (considering recency/novelty)...")

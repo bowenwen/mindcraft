@@ -23,6 +23,7 @@ from utils import ( # <<<--- UPDATED IMPORTS
     list_directory_contents, check_ollama_status, check_searxng_status
 )
 import chromadb
+import prompts # <<<--- IMPORT PROMPTS MODULE
 
 # --- Logging Setup ---
 import logging
@@ -111,24 +112,14 @@ class AutonomousAgent:
             memory_context_list.append(f"- [Memory - {relative_time}] (Type: {mem_type}):\n  {content_snippet}...")
         memory_context = "\n".join(memory_context_list) if memory_context_list else "No specific memories selected for this revision."
 
-        prompt = f"""You are an AI agent reflecting on your identity. Your goal is to revise your personal identity statement based on your recent experiences and purpose.
+        # --- Use prompt from prompts.py ---
+        prompt = prompts.REVISE_IDENTITY_PROMPT.format(
+            identity_statement=self.identity_statement,
+            reason=reason,
+            memory_context=memory_context
+        )
+        # ---
 
-**Current Identity Statement:**
-{self.identity_statement}
-
-**Reason for Revision:**
-{reason}
-
-**Relevant Recent Memories/Experiences (Consider recency indicated by '[X time ago]'):**
-{memory_context}
-
-**Your Task:** Based *only* on the information provided, write a revised, concise, first-person identity statement (2-4 sentences).
-**Guidelines:** Reflect growth, maintain cohesion, focus on purpose/capabilities, be concise. Consider the **recency** of memories when weighing their impact.
-**Format:** Output *only* the revised identity statement text, starting with "I am..." or similar.
-
-**Output Example:**
-I am an AI assistant focused on research tasks. I've recently improved my web browsing skills and am learning to handle complex multi-step analyses more effectively, though I sometimes struggle with ambiguous instructions.
-"""
         log.info(f"Asking {self.ollama_chat_model} to revise identity statement...")
         revised_statement_text = call_ollama_api(prompt, self.ollama_chat_model, self.ollama_base_url, timeout=150)
         if revised_statement_text and revised_statement_text.strip() and len(revised_statement_text) > 20:
@@ -149,16 +140,17 @@ I am an AI assistant focused on research tasks. I've recently improved my web br
             else:
                 log.info("Agent paused, skipping memory add for failed identity revision.")
 
-
+    # --- CORRECTED _update_ui_state ---
     def _update_ui_state(self, **kwargs):
+        """Updates the internal UI state dictionary."""
         with self._state_lock:
             self._ui_update_state["timestamp"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            # Directly update/add keys from kwargs
             for key, value in kwargs.items():
-                if key in self._ui_update_state: self._ui_update_state[key] = value
-                else: log.warning(f"Attempted to update unknown UI state key: {key}")
-            # --- MODIFIED: Ensure step history in UI state matches session state ---
+                self._ui_update_state[key] = value
+            # Ensure step history is always updated from session state
             self._ui_update_state["step_history"] = list(self.session_state.get("last_step_details", []))
-
+    # --- END CORRECTION ---
 
     def get_ui_update_state(self) -> Dict[str, Any]:
         with self._state_lock: return self._ui_update_state.copy()
@@ -313,37 +305,36 @@ I am an AI assistant focused on research tasks. I've recently improved my web br
         memory_context_str = "\n\n".join(other_memories_context_list) if other_memories_context_list else "No other relevant memories selected."
         user_provided_info_str = "\n---\n".join(user_provided_info_content) if user_provided_info_content else None
 
-        # --- MODIFIED PROMPT (Added 'status' tool, clarified PARAMETERS) ---
-        prompt = f"""You are an autonomous AI agent. Your primary goal is to achieve the **Overall Task** by deciding the single best next step, while considering your identity and user interactions.
+        # --- Use base prompt from prompts.py ---
+        # Create a dictionary of variables to format the prompt
+        prompt_vars = {
+            "identity_statement": self.identity_statement,
+            "task_description": task_description,
+            "tool_desc": tool_desc,
+            "memory_context_str": memory_context_str
+        }
+        prompt_text = prompts.GENERATE_THINKING_PROMPT_BASE.format(**prompt_vars)
+        # ---
 
-**Your Current Identity:**
-{self.identity_statement}
-
-**Overall Task:**
-{task_description}
-
-**Available Tools & Actions:**
-{tool_desc}
-
-**Relevant Memories (Re-ranked, consider recency indicated by '[X time ago]', novelty):**
-{memory_context_str}"""
-
+        # --- Dynamically append conditional sections ---
         if user_suggested_move_on:
-            prompt += f"\n\n**USER SUGGESTION PENDING:** The user suggested considering wrapping up this task soon."
+            prompt_text += f"\n\n**USER SUGGESTION PENDING:** The user suggested considering wrapping up this task soon."
         if user_provided_info_str:
-             prompt += f"\n\n**User Provided Information (Consider for current step):**\n{user_provided_info_str}\n"
+            prompt_text += f"\n\n**User Provided Information (Consider for current step):**\n{user_provided_info_str}\n"
 
-        prompt += f"""
+        prompt_text += f"""
 **Current Investigation Context (History - IMPORTANT: May contain previous errors):**
 {context if context else "First step for this task."}\n"""
-        # --- MODIFIED: Add action to last results display ---
+
         if tool_results:
             tool_name = tool_results.get('tool_name', 'Unknown')
             tool_action = tool_results.get('action', 'unknown') # Get action from result if available
-            prompt += f"\n**Results from Last Action:**\nTool: {tool_name} (Action: {tool_action})\nResult:\n```json\n{json.dumps(tool_results.get('result', {}), indent=2, ensure_ascii=False)}\n```\n"
+            prompt_text += f"\n**Results from Last Action:**\nTool: {tool_name} (Action: {tool_action})\nResult:\n```json\n{json.dumps(tool_results.get('result', {}), indent=2, ensure_ascii=False)}\n```\n"
         else:
-            prompt += "\n**Results from Last Action:**\nNone.\n"
-        prompt += """
+            prompt_text += "\n**Results from Last Action:**\nNone.\n"
+
+        # Append the final instructions and format description
+        prompt_text += """
 **Your Task Now:**
 1.  **Analyze:** Review ALL provided information (Identity, Task, Tools/Actions, Memories - including recency/novelty, User Provided Info, Context, Last Result).
 2.  **Reason:** Determine the single best action *right now* to make progress towards the **Overall Task**, consistent with your identity.
@@ -364,13 +355,13 @@ ANSWER: <Your complete answer, or a summary if concluding early based on suggest
 REFLECTIONS: <Optional thoughts.>
 **Critical Formatting Reminders:** Start *immediately* with "THINKING:". Structure must be exact. `PARAMETERS` must be valid JSON. For web/memory/file tools, `PARAMETERS` **must include the "action" key** corresponding to the tool's capabilities (e.g., "search", "browse", "read", "write", "list", "status_report"). **For the 'status' tool, use an empty JSON object `{}` for PARAMETERS.** Tool name must be one of the available tools.
 """
-        # --- END MODIFIED PROMPT ---
+        # --- END DYNAMIC APPEND ---
 
         log.info(f"Asking {self.ollama_chat_model} for next action (new tool structure)...")
-        llm_response_text = call_ollama_api(prompt, self.ollama_chat_model, self.ollama_base_url, timeout=180)
+        llm_response_text = call_ollama_api(prompt_text, self.ollama_chat_model, self.ollama_base_url, timeout=180) # Use prompt_text
         if llm_response_text is None: log.error("Failed to get thinking response from Ollama."); return "LLM communication failed.", {"type": "error", "message": "LLM communication failure (thinking).", "subtype": "llm_comm_error"}
 
-        # --- MODIFIED: Parsing logic for parameters (handle 'status' tool) ---
+        # --- Parsing logic remains the same ---
         try:
             action: Dict[str, Any] = {"type": "unknown"}; raw_thinking = llm_response_text
             thinking_marker = "THINKING:"; action_marker = "NEXT_ACTION:"; tool_marker = "TOOL:"; params_marker = "PARAMETERS:"; answer_marker = "ANSWER:"; reflections_marker = "REFLECTIONS:"
@@ -604,7 +595,18 @@ REFLECTIONS: <Optional thoughts.>
             memory_ids_to_prune.append(mem['id'])
 
         summary_context += "\n".join(mem_details) + "\n--- End Log ---"
-        summary_prompt = f"""Summarize the execution of this agent task based on the log below. Focus on objective, key actions/findings, errors/recovery, and final outcome ({task.status}).\n\n**Input Data:**\n{summary_context[:config.CONTEXT_TRUNCATION_LIMIT // 2]}\n\n**Output:** Concise summary text only."""
+
+        # --- Use prompt from prompts.py ---
+        # Calculate truncation limit, ensuring it's non-negative
+        trunc_limit = max(0, config.CONTEXT_TRUNCATION_LIMIT // 2)
+        # Format the prompt using the context and limit
+        summary_prompt = prompts.SUMMARIZE_TASK_PROMPT.format(
+            task_status=task.status,
+            summary_context=summary_context[:trunc_limit], # Apply truncation here
+            context_truncation_limit=trunc_limit # Inform the LLM about the limit used
+        )
+        # ---
+
         log.info(f"Asking {self.ollama_chat_model} to summarize task {task.id}...")
         summary_text = call_ollama_api(summary_prompt, self.ollama_chat_model, self.ollama_base_url, timeout=150)
         if summary_text and summary_text.strip():
@@ -905,7 +907,11 @@ REFLECTIONS: <Optional thoughts.>
                         if generated_desc: step_result_log.append(f"Generated idle task: {generated_desc[:60]}...")
                         else: step_result_log.append("No new idle tasks generated.")
 
-                    self._update_ui_state(**default_state, log="\n".join(step_result_log)) # Update log specifically
+                    # --- FIX 1: Update default_state copy before unpacking ---
+                    state_to_update = default_state.copy()
+                    state_to_update["log"] = "\n".join(step_result_log)
+                    self._update_ui_state(**state_to_update) # Update log specifically
+                    # --- END FIX 1 ---
                     return self.get_ui_update_state() # Return idle state
 
             if task and task.status == "in_progress": # Ensure task is still valid and in progress
@@ -917,7 +923,11 @@ REFLECTIONS: <Optional thoughts.>
                  self.session_state["current_task_id"] = None; self.session_state["investigation_context"] = ""; self.session_state["current_task_retries"] = 0
                  with self._state_lock: self.session_state["user_suggestion_move_on_pending"] = False
                  self.save_session_state()
-                 self._update_ui_state(**default_state, log="\n".join(step_result_log)) # Update log
+                 # --- FIX 1: Update default_state copy before unpacking ---
+                 state_to_update = default_state.copy()
+                 state_to_update["log"] = "\n".join(step_result_log)
+                 self._update_ui_state(**state_to_update) # Update log
+                 # --- END FIX 1 ---
                  return self.get_ui_update_state()
             else:
                  log.error("Task became None unexpectedly before step execution."); step_result_log.append("[ERROR] Task lost before execution.");
@@ -932,8 +942,12 @@ REFLECTIONS: <Optional thoughts.>
                  self.session_state["current_task_id"] = None; self.session_state["investigation_context"] = ""; self.session_state["current_task_retries"] = 0
                  with self._state_lock: self.session_state["user_suggestion_move_on_pending"] = False
                  self.save_session_state()
-            # --- MODIFIED: Reset UI state on critical error ---
-            self._update_ui_state(**default_state, status="critical_error", log="\n".join(step_result_log));
+            # --- FIX 1: Update default_state copy before unpacking ---
+            state_to_update = default_state.copy()
+            state_to_update["status"] = "critical_error"
+            state_to_update["log"] = "\n".join(step_result_log)
+            self._update_ui_state(**state_to_update)
+            # --- END FIX 1 ---
             return self.get_ui_update_state()
     # --- END MODIFICATION ---
 
@@ -961,31 +975,20 @@ REFLECTIONS: <Optional thoughts.>
         existing_tasks_info = [{"id": t.id, "description": t.description, "status": t.status} for t in self.task_queue.tasks.values()]; active_tasks_summary = "\n".join([f"- ID: {t['id']} (Status: {t['status']}) Desc: {t['description'][:100]}..." for t in existing_tasks_info if t['status'] in ['pending', 'in_progress']]) or "None"
         completed_failed_summary = "\n".join([f"- ID: {t['id']} (Status: {t['status']}) Desc: {t['description'][:100]}..." for t in existing_tasks_info if t['status'] in ['completed', 'failed']])[-1000:]; valid_existing_task_ids = set(t['id'] for t in existing_tasks_info)
 
-        # --- MODIFIED PROMPT (no functional change needed for UI) ---
-        prompt = f"""You are the planning component of an AI agent. Generate new, actionable tasks based on state, history, and identity.
-**Agent's Current Identity:**
-{self.identity_statement}
-**Current Context Focus:**
-{context_query}
-**Recent Activity & Memory Snippets (Consider recency indicated by '[X time ago]'):**
-{mem_summary}
-**Existing Pending/In-Progress Tasks (Check duplicates!):**
-{active_tasks_summary}
-**Recently Finished Tasks (for context):**
-{completed_failed_summary}
-{critical_evaluation_instruction}
-**Your Task:** Review all info (paying attention to recency of memories). Identify gaps/next steps relevant to Context & Identity. Generate up to {max_new_tasks} new, specific, actionable tasks that require using the agent's tools (web search/browse, memory search/write, file read/write/list, status report). AVOID DUPLICATES of pending/in-progress tasks. Assign priority (1-10, consider identity). Add necessary `depends_on` using existing IDs only. Suggest follow-up, refinement, or (max 1) exploratory tasks.
-**Guidelines:** Actionable (verb start, often implying tool use), Specific, Novel, Relevant (to context/identity), Concise.
-**Output Format (Strict JSON):** Provide *only* a valid JSON list of objects (or `[]`). Example:
-```json
-[
-  {{"description": "Search the web for recent news on AI agent memory techniques.", "priority": 7}},
-  {{"description": "Read the contents of the 'summary.txt' artifact.", "priority": 6, "depends_on": ["xyz"]}},
-  {{"description": "Write a brief reflection on the challenges encountered in task [abc] to memory.", "priority": 4, "depends_on": ["abc"]}},
-  {{"description": "Get the current agent status report.", "priority": 2}}
-]
-```"""
-        # --- END MODIFIED PROMPT ---
+        # --- Use prompt from prompts.py ---
+        # Create dictionary for formatting
+        prompt_vars = {
+            "identity_statement": self.identity_statement,
+            "context_query": context_query,
+            "mem_summary": mem_summary,
+            "active_tasks_summary": active_tasks_summary,
+            "completed_failed_summary": completed_failed_summary,
+            "critical_evaluation_instruction": critical_evaluation_instruction,
+            "max_new_tasks": max_new_tasks
+        }
+        prompt = prompts.GENERATE_NEW_TASKS_PROMPT.format(**prompt_vars)
+        # ---
+
         log.info(f"Asking {self.ollama_chat_model} to generate up to {max_new_tasks} new tasks..."); llm_response = call_ollama_api(prompt, self.ollama_chat_model, self.ollama_base_url, timeout=180)
         # --- Parsing logic unchanged ---
         if not llm_response: log.error("LLM failed task gen."); return None
@@ -1092,7 +1095,19 @@ REFLECTIONS: <Optional thoughts.>
              mem_summary_list.append(f"- [{relative_time}] {mem_type}: {snippet}...")
          mem_summary = "\n".join(mem_summary_list) if mem_summary_list else "None"
 
-         prompt = f"""You are AI agent ({self.identity_statement}). Reflect on your work session.\n**Start:** {start.isoformat()}\n**End:** {end.isoformat()}\n**Duration:** {duration_minutes:.1f} min\n**Tasks Completed:** {completed_count}\n**Tasks Processed:** {processed_count}\n**Recent Activity/Identity Notes (Consider recency indicated by '[X time ago]'):**\n{mem_summary}\n\n**Reflection Task:** Provide concise reflection: 1. Accomplishments? 2. Efficiency? 3. Challenges/errors? 4. Learnings? 5. Alignment with identity/goals? 6. Improvements?"""
+         # --- Use prompt from prompts.py ---
+         prompt_vars = {
+            "identity_statement": self.identity_statement,
+            "start_iso": start.isoformat(),
+            "end_iso": end.isoformat(),
+            "duration_minutes": duration_minutes,
+            "completed_count": completed_count,
+            "processed_count": processed_count,
+            "mem_summary": mem_summary
+         }
+         prompt = prompts.SESSION_REFLECTION_PROMPT.format(**prompt_vars)
+         # ---
+
          log.info(f"Asking {self.ollama_chat_model} for session reflection..."); reflection = call_ollama_api(prompt, self.ollama_chat_model, self.ollama_base_url, timeout=120)
          if reflection and reflection.strip(): print(f"\n--- Session Reflection ---\n{reflection}\n------"); self.add_self_reflection(reflection, "session_reflection")
          else: log.warning("Failed to generate session reflection.")

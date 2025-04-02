@@ -969,7 +969,7 @@ else:
                 )
 
 
-            # --- Chat Tab (Structure Unchanged, uses updated memory formatter) ---
+            # --- MODIFIED Chat Tab Layout ---
             with gr.TabItem("Chat"):
                 gr.Markdown(
                     "Interact with the agent. It considers its identity, activity, and your input."
@@ -977,9 +977,14 @@ else:
                 last_generated_task_id_state = gr.State(None)
                 with gr.Row():
                     with gr.Column(scale=3):
+                        # --- FIX 2: Define Chatbot variable and RENDER it immediately ---
                         chat_chatbot = gr.Chatbot(
-                            label="Conversation", height=500, show_copy_button=True, type="messages", render=False # Use render=False for messages
+                            label="Conversation", height=500, show_copy_button=True, type="messages", render=False
                         )
+                        chat_chatbot.render() # RENDER HERE TO PUT IT AT THE TOP OF THE COLUMN
+                        # --- END FIX 2 ---
+
+                        # Define other input elements AFTER chatbot is rendered
                         with gr.Row():
                             chat_task_panel = gr.Textbox(
                                 label="💡 Last Generated Task (Chat)", value="(No task generated yet)",
@@ -996,10 +1001,10 @@ else:
                             )
                             chat_send_button = gr.Button("Send", variant="primary", scale=1)
                             inject_info_btn = gr.Button("Inject Info for Task", scale=1)
+                        # Removed chat_chatbot.render() from here
+
                     with gr.Column(scale=1):
                         chat_memory_panel = gr.Markdown(value="Relevant Memories (Chat)\n...", label="Memory Context")
-                # Render chatbot after defining components that might interact via State
-                chat_chatbot.render()
 
                 chat_outputs = [
                     chat_chatbot, chat_memory_panel, chat_task_panel,
@@ -1017,6 +1022,7 @@ else:
                 inject_info_btn.click(
                     fn=inject_chat_info, inputs=[chat_msg_input], outputs=[chat_interaction_feedback]
                 )
+            # --- END MODIFIED Chat Tab ---
 
             # --- Agent State Tab (Unchanged) ---
             with gr.TabItem("Agent State"):

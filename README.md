@@ -21,9 +21,9 @@ The agent operates autonomously in the background, processing tasks while provid
 
 ## ✨ Features
 
-*   **🧠 Intelligent Core:** Leverages local LLMs (configurable via Ollama) for planning, reasoning, reflection, and task generation.
+*   **🧠 Intelligent Core:** Leverages local LLMs (configurable via Ollama) for planning, reasoning, reflection, and task generation, using centralized prompts defined in `prompts.py`.
 *   **💾 Persistent Vector Memory:** Uses ChromaDB to store and retrieve relevant information (task steps, tool results, reflections, chat history) based on semantic similarity.
-*   **🔍 LLM-Powered Memory Re-ranking:** Enhances memory retrieval by using the LLM to re-rank initial candidates for contextual relevance.
+*   **🔍 LLM-Powered Memory Re-ranking:** Enhances memory retrieval by using the LLM (guided by prompts in `prompts.py`) to re-rank initial candidates for contextual relevance.
 *   **🛠️ Extensible Consolidated Tool System:**
     *   **`web` Tool:**
         *   `search` action: Integrated with SearXNG for versatile web searching.
@@ -35,21 +35,21 @@ The agent operates autonomously in the background, processing tasks while provid
         *   `read` action: Reads text from files within a secure artifact workspace (`output/artifacts/`).
         *   `write` action: Writes text to files within the workspace (does not overwrite).
         *   `list` action: Lists files and directories within the workspace.
-    *   Easily add new tools or actions by modifying tool classes and updating the agent's prompts/parsing.
+    *   Easily add new tools or actions by modifying tool classes and updating the agent's prompt usage (prompts located in `prompts.py`).
 *   **📋 Task Management:**
     *   Persistent task queue (`output/task_queue.json`).
     *   Supports task priorities.
     *   Supports task dependencies (tasks wait for prerequisites).
 *   **🤖 Autonomous Operation:** Runs task processing loop in a background thread.
 *   **🌐 Gradio Web Interface:**
-    *   **Monitor Tab:** Visualize the agent's current task, step logs, recently accessed memories, and last browsed web content. Control buttons to Start/Pause the autonomous loop. *Updates automatically while the agent is running.*
-    *   **Chat Tab:** Interact directly with the agent. Chat history is saved to memory, and interactions can trigger new task generation. Displays recently generated tasks and relevant memories for the chat context.
+    *   **Monitor Tab:** Visualize the agent's current task, step logs, recently accessed memories, and last browsed web content. Control buttons to Start/Pause the autonomous loop. *Updates automatically while the agent is running.* Includes a step history explorer.
+    *   **Chat Tab:** Interact directly with the agent. Chat history is saved to memory, and interactions can trigger new task generation. Displays recently generated tasks and relevant memories for the chat context. Conversation history appears above the input area.
     *   **Agent State Tab:** View the agent's identity statement, task queues (pending, in-progress, completed, failed), memory summary, and explore task-specific or general memories. *Requires manual refresh using the "Load Agent State" button.*
-*   **💡 Reactive Task Generation:** The agent can evaluate chat interactions or its idle state to generate new, relevant tasks (including exploratory ones) with priorities and dependencies.
+*   **💡 Reactive Task Generation:** The agent can evaluate chat interactions or its idle state to generate new, relevant tasks (including exploratory ones) with priorities and dependencies, guided by prompts in `prompts.py`.
 *   **📊 QLoRA Dataset Generation:** Automatically saves completed task `(description, final_answer)` pairs and qualifying chat interactions to a `.jsonl` file suitable for fine-tuning.
 *   **📝 Activity Summaries:** Generates daily summary logs (`output/summary/summary_YYYY-MM-DD.txt`) for high-level tracking.
 *   **🔄 Robust Step Error Handling:** Implements configurable retries within task steps for recoverable errors (e.g., tool failures, LLM parsing issues), allowing the agent to attempt recovery before failing the entire task.
-*   **🧠 Memory Summarization & Pruning:** Automatically generates LLM-based summaries of completed or failed tasks, storing the essence while optionally deleting the detailed step-by-step memories to manage long-term memory size and relevance (configurable).
+*   **🧠 Memory Summarization & Pruning:** Automatically generates LLM-based summaries of completed or failed tasks (using prompts from `prompts.py`), storing the essence while optionally deleting the detailed step-by-step memories to manage long-term memory size and relevance (configurable).
 *   **📁 Secure Artifact Workspace:** Tools interacting with the filesystem (`file` tool) are restricted to a designated subfolder (`output/artifacts/` by default) to enhance security.
 
 ## 🏗️ Architecture Overview
@@ -57,17 +57,19 @@ The agent operates autonomously in the background, processing tasks while provid
 The project is structured into several key Python modules:
 
 *   `app_ui.py`: Main entry point, defines the Gradio interface and orchestrates agent startup/shutdown. Manages UI updates.
-*   `agent.py`: Contains the `AutonomousAgent` class, the central orchestrator managing the main loop, state, thinking process (including tool/action selection), error handling/recovery, memory summarization, and interactions between components.
-*   `memory.py`: Implements the `AgentMemory` class for interacting with ChromaDB, handling embedding pre-checks, and supporting memory retrieval/deletion/metadata queries. Includes LLM-based re-ranking logic.
+*   `agent.py`: Contains the `AutonomousAgent` class, the central orchestrator managing the main loop, state, thinking process (including tool/action selection based on prompts from `prompts.py`), error handling/recovery, memory summarization, and interactions between components.
+*   `memory.py`: Implements the `AgentMemory` class for interacting with ChromaDB, handling embedding pre-checks, and supporting memory retrieval/deletion/metadata queries. Includes LLM-based re-ranking logic (utilizing prompts from `prompts.py`).
 *   `task_manager.py`: Defines the `TaskQueue` for managing tasks and their persistence.
 *   `data_structures.py`: Defines the `Task` class.
-*   `utils.py`: Handles communication with the Ollama API, path sanitization/validation for file tools, and utility functions like relative time formatting.
+*   `utils.py`: Handles communication with the Ollama API, path sanitization/validation for file tools, status checks, and utility functions like relative time formatting.
+*   `prompts.py`: Defines constant strings for the core LLM prompts used for agent reasoning, identity revision, summarization, task generation, and memory re-ranking.
 *   `tools/`: A sub-package for consolidated tools:
     *   `base.py`: Abstract `Tool` base class.
     *   `web_tool.py`: Implements `search` and `browse` actions.
     *   `memory_tool.py`: Implements `search` and `write` actions.
     *   `file_tool.py`: Implements `read`, `write`, and `list` actions for the artifact workspace.
-    *   `__init__.py`: Loads and registers the available tool instances (`web`, `memory`, `file`).
+    *   `status_tool.py`: Implements the `status_report` action.
+    *   `__init__.py`: Loads and registers the available tool instances (`web`, `memory`, `file`, `status`).
 *   `config.py`: Loads and stores configuration from the `.env` file (including paths, model names, API keys, retry counts, memory summarization settings, and the `ARTIFACT_FOLDER` path).
 
 ## 🚀 Getting Started
@@ -130,12 +132,13 @@ The Gradio interface has three main tabs:
     *   **Current Task:** Shows the ID, status, and description of the task the agent is currently focused on (or "Idle").
     *   **Last Step Log:** Displays detailed logs generated during the most recent processing step, including the tool, action, parameters used, and retry attempts if applicable.
     *   **Recent Memories:** Shows a summary of the latest memories retrieved by the agent relevant to its current step (may include `task_summary` types).
-    *   **Last Web Content:** Displays the text content fetched by the last `web` tool `browse` action execution.
+    *   **Tool Output / Browse Content:** Displays formatted output from the last tool execution (e.g., search results, file listing, status report) or the text content fetched by the last `web` tool `browse` action execution.
     *   **Last Final Answer:** Displays the final answer provided by the agent for the most recently completed task.
+    *   **Step History Explorer:** An expandable section to navigate through the details of recent agent steps (thinking, action, results).
     *   ***This tab updates automatically every few seconds while the agent is running.***
 
 2.  **Chat:**
-    *   **Conversation:** Interact directly with the agent using natural language.
+    *   **Conversation:** Interact directly with the agent using natural language. History appears above the input area.
     *   **Relevant Memories (Chat):** Shows memories retrieved specifically for the context of the current chat turn.
     *   **Last Generated Task (Chat):** If your chat interaction warrants a background task, its description and ID will appear here.
     *   **Prioritize Task:** If a task was just generated, click this to increase its priority in the queue.
@@ -166,19 +169,20 @@ Key settings are managed via the `.env` file. See `config.py` for all available 
     3.  Update the tool's `description` in `__init__` to include the new action and its parameters.
     4.  Modify the main `run` method to check for the new `action` string in the `parameters` dictionary and call your new private method.
     5.  Update `agent.py`:
-        *   Modify `generate_thinking` prompt to teach the LLM about the new action and its required parameters within the `PARAMETERS` JSON.
         *   Adjust the parameter validation logic within `generate_thinking`'s parsing section to handle the new action's specific parameter requirements.
+        *   Ensure the main thinking prompt in `prompts.py` (`GENERATE_THINKING_PROMPT_BASE` and its dynamically appended parts in `agent.py`) accurately instructs the LLM about the new action and its required parameters within the `PARAMETERS` JSON.
 *   **Adding New Tools:**
     1.  Create a new Python file in `tools/` (e.g., `tools/calendar_tool.py`).
     2.  Define a class inheriting from `tools.base.Tool`.
     3.  Implement `__init__` (setting `name` and `description`, mentioning required actions/params).
     4.  Implement the `run` method, which should check `parameters['action']` and call internal logic. Ensure it returns a dictionary, including an `"error"` key on failure.
     5.  Import your new tool class in `tools/__init__.py` and add an instance to `AVAILABLE_TOOLS`.
-    6.  Update `agent.py` (`get_available_tools_description`, `generate_thinking` prompt, parameter validation) to incorporate the new tool.
-*   **Modifying Prompts:** Core prompts for agent thinking, task generation, reflection, summarization etc., are located within the methods of the `AutonomousAgent` class in `agent.py`. Remember to update the `PARAMETERS` format examples if tool actions change.
+    6.  Update `agent.py` (`get_available_tools_description`, parameter validation in `generate_thinking`) to incorporate the new tool.
+    7.  Update the thinking prompt in `prompts.py` (and its dynamic parts in `agent.py`) to teach the LLM about the new tool and its usage.
+*   **Modifying Prompts:** Core prompts for agent thinking, task generation, reflection, summarization, identity revision, and memory re-ranking are now located as constants in `prompts.py`. Edit these strings directly to change the agent's behavior. Remember to update the `PARAMETERS` format examples within the relevant prompts in `prompts.py` if tool actions change.
 *   **Changing Models:** Update the `OLLAMA_CHAT_MODEL` and `OLLAMA_EMBED_MODEL` variables in your `.env` file. Ensure the chosen models are available in your Ollama instance.
 *   **Adjusting Error Handling:** Modify `AGENT_MAX_STEP_RETRIES` in `.env` or refine the retry logic in `agent.py:_execute_step`.
-*   **Adjusting Memory Strategy:** Toggle `ENABLE_MEMORY_SUMMARIZATION` and `DELETE_MEMORIES_AFTER_SUMMARY` in `.env`. Modify summarization prompts or logic in `agent.py:_summarize_and_prune_task_memories`.
+*   **Adjusting Memory Strategy:** Toggle `ENABLE_MEMORY_SUMMARIZATION` and `DELETE_MEMORIES_AFTER_SUMMARY` in `.env`. Modify summarization prompts in `prompts.py` or the summarization/pruning logic in `agent.py:_summarize_and_prune_task_memories`.
 
 ## 🛣️ Future Work / Roadmap
 
