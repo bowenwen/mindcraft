@@ -4,6 +4,8 @@ import re
 import traceback
 import json
 import io
+import random # Added for User-Agent rotation
+from urllib.parse import urlparse # Added for Referer generation
 from typing import Dict, Any
 from bs4 import BeautifulSoup, NavigableString, Tag
 import fitz  # PyMuPDF
@@ -16,11 +18,21 @@ import logging
 
 log = logging.getLogger("TOOL_Web")
 
+# List of common, relatively modern User-Agent strings
+COMMON_USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/119.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36 Edg/118.0.2088.76",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Version/17.1 Safari/605.1.15", # Safari
+]
 
 class WebTool(Tool):
     """
     Performs web-related actions: searching using SearXNG or browsing/parsing a specific URL.
     Requires 'action' parameter: 'search' or 'browse'.
+    Attempts to mimic browser behavior to reduce blocking, but may still fail on sites with advanced bot detection.
     """
 
     def __init__(self):
@@ -30,17 +42,41 @@ class WebTool(Tool):
                 "Performs web actions. Requires 'action' parameter. "
                 "Actions: "
                 "'search' (requires 'query'): Uses SearXNG to find information. Returns search results. "
-                "'browse' (requires 'url'): Fetches and parses content from a URL (HTML, PDF, JSON, TXT). Returns parsed content."
+                "'browse' (requires 'url'): Fetches and parses content from a URL (HTML, PDF, JSON, TXT). Returns parsed content. "
+                "Note: Browsing may fail on sites with strong bot protection (e.g., Cloudflare)."
             ),
         )
-        # For browse action
-        self.browse_headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        # Use a session object for connection pooling and cookie handling
+        self.session = requests.Session()
+        # Session-wide headers (User-Agent will be set per-request)
+        self.session.headers.update({
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,application/pdf,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.5",
-        }
+            "Accept-Encoding": "gzip, deflate", # Request compressed content
+            "Connection": "keep-alive",         # Keep connection open for potential reuse
+            "Upgrade-Insecure-Requests": "1",   # Signal preference for HTTPS
+            "DNT": "1",                         # Signal "Do Not Track"
+        })
         # For search action (checked during run)
         self.search_headers = {"Accept": "application/json"}
+
+    def _get_browse_headers(self, url: str) -> Dict[str, str]:
+        """Generates headers for a specific browse request, including a random User-Agent and Referer."""
+        headers = self.session.headers.copy() # Start with session headers
+        headers["User-Agent"] = random.choice(COMMON_USER_AGENTS)
+
+        # Add a Referer header based on the target URL's domain
+        try:
+            parsed_url = urlparse(url)
+            # Use the scheme and netloc (domain) as the referer base
+            referer = f"{parsed_url.scheme}://{parsed_url.netloc}/"
+            headers["Referer"] = referer
+        except Exception:
+            # If URL parsing fails, don't add a referer
+            log.warning(f"Could not parse URL '{url}' to generate Referer header.")
+            pass
+
+        return headers
 
     # --- Helper methods from WebBrowserTool (unchanged) ---
     def _clean_text_basic(self, text: str) -> str:
@@ -121,7 +157,7 @@ class WebTool(Tool):
                 if is_block_end and not next_is_block_start: final_text += "\n\n"
                 else: final_text += "\n"
         return final_text.strip()
-    # --- End Helper methods from WebBrowserTool ---
+    # --- End Helper methods ---
 
     def _run_search(self, query: str) -> Dict[str, Any]:
         """Executes a search query against the configured SearXNG instance."""
@@ -133,6 +169,7 @@ class WebTool(Tool):
         searxng_url = SEARXNG_BASE_URL.rstrip("/") + "/search"
 
         try:
+            # Use a standard requests.get for search, as session/fancy headers are less critical here
             response = requests.get(
                 searxng_url,
                 params=params,
@@ -149,6 +186,7 @@ class WebTool(Tool):
                 )
                 return {"error": "Failed JSON decode from SearXNG."}
 
+            # --- (Processing logic remains the same as before) ---
             processed = []
             if "infoboxes" in search_data and isinstance(search_data["infoboxes"], list):
                 for ib in search_data["infoboxes"]:
@@ -214,7 +252,7 @@ class WebTool(Tool):
                 "results": processed,
                 "message": f"Search completed successfully, returning {len(processed)} results.",
             }
-
+        # --- (Error handling remains the same) ---
         except requests.exceptions.Timeout:
             log.error(
                 f"SearXNG request timed out ({SEARXNG_TIMEOUT}s) to {searxng_url}"
@@ -228,7 +266,7 @@ class WebTool(Tool):
             return {"error": f"Unexpected web search error."}
 
     def _run_browse(self, url: str) -> Dict[str, Any]:
-        """Fetches and extracts text content from the provided URL."""
+        """Fetches and extracts text content from the provided URL using enhanced headers."""
         log.info(f"Attempting to browse URL: {url}")
 
         if not url.startswith(("http://", "https://")):
@@ -241,13 +279,38 @@ class WebTool(Tool):
         content_source = "unknown"
 
         try:
-            response = requests.get(url, headers=self.browse_headers, timeout=25)
+            # Generate headers for this specific request
+            request_headers = self._get_browse_headers(url)
+            log.debug(f"Using headers for {url}: {request_headers}")
+
+            # Use the session object to make the GET request
+            response = self.session.get(
+                url,
+                headers=request_headers, # Pass specific headers for this request
+                timeout=25,
+                allow_redirects=True # Ensure redirects are followed by the session
+            )
+
+            # Check for non-success status codes *after* potential redirects
+            final_url = response.url # URL after potential redirects
+            log.info(f"Request to {url} resulted in status {response.status_code} at {final_url}")
+            if response.status_code == 403:
+                 log.warning(f"Received 403 Forbidden for {final_url}. Site may be blocking automated access.")
+                 # Return a specific error for 403
+                 return {"error": f"Access denied (403 Forbidden) when trying to browse {final_url}. The site may block automated tools."}
+            elif response.status_code == 404:
+                 log.warning(f"Received 404 Not Found for {final_url}.")
+                 return {"error": f"Page not found (404 Not Found) at {final_url}."}
+
+            # Raise exceptions for other bad status codes (4xx client errors, 5xx server errors)
             response.raise_for_status()
+
             content_type = (
                 response.headers.get("Content-Type", "").lower().split(";")[0].strip()
             )
-            log.info(f"URL Content-Type detected: '{content_type}'")
+            log.info(f"URL Content-Type detected: '{content_type}' from {final_url}")
 
+            # --- (Parsing logic remains the same as before) ---
             if content_type == "application/pdf":
                 content_source = "pdf"
                 log.info("Parsing PDF content...")
@@ -269,7 +332,7 @@ class WebTool(Tool):
                         f"Extracted text from PDF (Length: {len(extracted_text)})."
                     )
                 except Exception as pdf_err:
-                    log.error(f"Error parsing PDF from {url}: {pdf_err}", exc_info=True)
+                    log.error(f"Error parsing PDF from {final_url}: {pdf_err}", exc_info=True)
                     return {"error": f"Failed to parse PDF content. Error: {pdf_err}"}
 
             elif content_type == "text/html":
@@ -292,7 +355,7 @@ class WebTool(Tool):
                         f"Formatted JSON content (Length: {len(extracted_text)})."
                     )
                 except json.JSONDecodeError as json_err:
-                    log.error(f"Invalid JSON received from {url}: {json_err}")
+                    log.error(f"Invalid JSON received from {final_url}: {json_err}")
                     return {
                         "error": f"Failed to parse JSON content. Invalid format. Error: {json_err}"
                     }
@@ -305,10 +368,11 @@ class WebTool(Tool):
 
             else:
                 log.warning(
-                    f"Unsupported Content-Type '{content_type}' for URL {url}. Attempting fallback."
+                    f"Unsupported Content-Type '{content_type}' for URL {final_url}. Attempting fallback."
                 )
                 try:
-                    fallback_text = self._clean_text_basic(response.text)
+                    # Use response.content and decode carefully for fallback
+                    fallback_text = self._clean_text_basic(response.content.decode(response.encoding or 'utf-8', errors='replace'))
                     if fallback_text and len(fallback_text) > 50:
                         extracted_text = fallback_text
                         content_source = "text_fallback"
@@ -321,20 +385,20 @@ class WebTool(Tool):
                         }
                 except Exception as fallback_err:
                     log.error(
-                        f"Error during fallback text extraction for {url}: {fallback_err}"
+                        f"Error during fallback text extraction for {final_url}: {fallback_err}"
                     )
                     return {
                         "error": f"Cannot browse: Unsupported content type '{content_type}' and fallback extraction failed."
                     }
-
+            # --- (Truncation and result formatting remains the same) ---
             if not extracted_text:
                 log.warning(
-                    f"Could not extract significant textual content ({content_source}) from {url}"
+                    f"Could not extract significant textual content ({content_source}) from {final_url}"
                 )
                 return {
                     "status": "success",
                     "action": "browse",
-                    "url": url,
+                    "url": final_url, # Return the final URL after redirects
                     "content": None,
                     "message": f"No significant textual content found via {content_source} parser.",
                 }
@@ -344,7 +408,7 @@ class WebTool(Tool):
             message = "Content browsed and parsed successfully."
             if len(extracted_text) > limit:
                 log.info(
-                    f"Content from {url} truncated from {len(extracted_text)} to {limit} characters."
+                    f"Content from {final_url} truncated from {len(extracted_text)} to {limit} characters."
                 )
                 extracted_text = extracted_text[:limit] + "\n\n... [CONTENT TRUNCATED]"
                 truncated = True
@@ -353,7 +417,7 @@ class WebTool(Tool):
             result = {
                 "status": "success",
                 "action": "browse",
-                "url": url,
+                "url": final_url, # Return the final URL
                 "content_source": content_source,
                 "content": extracted_text,
                 "truncated": truncated,
@@ -361,22 +425,27 @@ class WebTool(Tool):
             }
 
             log.info(
-                f"Successfully browsed and extracted content from {url} (Source: {content_source}, Length: {len(extracted_text)} chars)."
+                f"Successfully browsed and extracted content from {final_url} (Source: {content_source}, Length: {len(extracted_text)} chars)."
             )
             return result
 
+        # --- (Error handling remains mostly the same, updated URL in messages) ---
         except requests.exceptions.Timeout:
             log.error(f"Request timed out while browsing {url}")
+            # Use the original requested URL in the timeout error message
             return {"error": f"Request timed out accessing URL: {url}"}
         except requests.exceptions.RequestException as e:
+            # Log the error with the original URL, but the error message might contain the final URL if redirection happened before failure
             log.error(f"Request failed for URL {url}: {e}")
             status_code = (
                 e.response.status_code
                 if hasattr(e, "response") and e.response is not None
                 else "N/A"
             )
+            # Use the final URL from the response if available, otherwise the original URL
+            error_url = e.response.url if hasattr(e, "response") and e.response is not None else url
             return {
-                "error": f"Failed to retrieve URL {url}. Status: {status_code}. Error: {e}"
+                "error": f"Failed to retrieve URL {error_url}. Status: {status_code}. Error: {e}"
             }
         except Exception as e:
             log.exception(f"Unexpected error during web browse for {url}: {e}")
