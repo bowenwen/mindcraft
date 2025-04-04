@@ -202,11 +202,11 @@ def format_other_tool_results(results_data: Optional[Dict[str, Any]]) -> str:
             "report_content", "(Status report content missing)"
         )
         # Use Markdown code block for the report
-        return f"**📊 Status Report**\nStatus: {status}\n{message or ''}\n---\n```markdown\n{report_content}\n```"
+        return f"**📊 Status Report**\n\nStatus: {status}\n\n{message or ''}\n\n---\n```markdown\n{report_content}\n```"
     # --- End special handling ---
 
     # --- General handling ---
-    output = [f"**🛠️ Tool Result**\n {tool_name}: ({action})\nStatus: {status}\n"]
+    output = [f"**🛠️ Tool Result**\n\n {tool_name}: ({action})\n\nStatus: {status}\n\n"]
     if message:
         output.append(f"{message}\n")
     if error:
