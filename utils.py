@@ -7,14 +7,21 @@ import datetime
 import json
 from typing import Optional, List, Tuple
 
+# --- ChromaDB Imports ---
+import chromadb
+from chromadb.utils.embedding_functions import OllamaEmbeddingFunction
+
 # Import specific config values needed
 from config import (
     OLLAMA_BASE_URL,
     OLLAMA_TIMEOUT,
     MODEL_CONTEXT_LENGTH,
     ARTIFACT_FOLDER,
-    SEARXNG_BASE_URL,  # Added for status check
-    SEARXNG_TIMEOUT,  # Added for status check
+    SEARXNG_BASE_URL,
+    SEARXNG_TIMEOUT,
+    DOC_ARCHIVE_DB_PATH,  # <<<--- NEW
+    DOC_ARCHIVE_COLLECTION_NAME,  # <<<--- NEW
+    OLLAMA_EMBED_MODEL,  # <<<--- NEEDED for Embedding Function
 )
 
 # Suggestion: Consider adding basic logging setup here or importing from a dedicated logging module
@@ -80,19 +87,53 @@ def call_ollama_api(
     return None
 
 
-# --- NEW: Status Check Functions ---
+# --- NEW: Document Archive ChromaDB Setup ---
+def setup_doc_archive_chromadb() -> Optional[chromadb.Collection]:
+    """Initializes ChromaDB client and collection for the document archive."""
+    log.info(
+        f"Initializing Document Archive ChromaDB client at path: {DOC_ARCHIVE_DB_PATH}"
+    )
+    try:
+        settings = chromadb.Settings(anonymized_telemetry=False)
+        doc_vector_db = chromadb.PersistentClient(
+            path=DOC_ARCHIVE_DB_PATH, settings=settings
+        )
+        log.info(
+            f"Getting or creating Doc Archive ChromaDB collection '{DOC_ARCHIVE_COLLECTION_NAME}'"
+        )
+        # We still use the same embedding model defined in config
+        embedding_function = OllamaEmbeddingFunction(
+            url=f"{OLLAMA_BASE_URL}/api/embeddings", model_name=OLLAMA_EMBED_MODEL
+        )
+        doc_archive_collection = doc_vector_db.get_or_create_collection(
+            name=DOC_ARCHIVE_COLLECTION_NAME,
+            embedding_function=embedding_function,
+            metadata={"hnsw:space": "cosine"},  # Use cosine similarity
+        )
+        log.info("Document Archive ChromaDB collection ready.")
+        return doc_archive_collection
+    except Exception as e:
+        log.critical(
+            f"Could not initialize Document Archive ChromaDB at {DOC_ARCHIVE_DB_PATH}.",
+            exc_info=True,
+        )
+        return None
+
+
+# --- End NEW Document Archive ChromaDB Setup ---
+
+
+# --- Status Check Functions ---
 def check_ollama_status(
     base_url: str = OLLAMA_BASE_URL, timeout: int = 5
 ) -> Tuple[bool, str]:
     """Checks if the Ollama API is reachable and responding."""
     if not base_url:
         return False, "Ollama base URL not configured."
-    # Try a lightweight endpoint, like listing models or just hitting the base URL
-    api_url = f"{base_url}/api/tags"  # Check models endpoint
+    api_url = f"{base_url}/api/tags"
     try:
         response = requests.get(api_url, timeout=timeout)
         response.raise_for_status()
-        # Check if response is valid JSON (expected for /api/tags)
         response.json()
         return True, "OK"
     except requests.exceptions.Timeout:
@@ -119,17 +160,15 @@ def check_searxng_status(
     if not base_url:
         return False, "SearXNG base URL not configured."
     try:
-        # Just check if the base URL is accessible
         response = requests.get(
             base_url, timeout=timeout, headers={"Accept": "text/html"}
         )
         response.raise_for_status()
-        # Basic check for expected HTML content
         if "<html" not in response.text.lower():
             return (
                 True,
                 "OK (Unexpected Content)",
-            )  # Reachable, but maybe not SearXNG homepage
+            )
         return True, "OK"
     except requests.exceptions.Timeout:
         return False, f"Timeout ({timeout}s)"
@@ -146,7 +185,7 @@ def check_searxng_status(
         return False, f"Unexpected Error: {str(e)[:50]}"
 
 
-# --- End NEW Status Check Functions ---
+# --- End Status Check Functions ---
 
 
 def format_relative_time(timestamp_str: Optional[str]) -> str:
@@ -154,7 +193,6 @@ def format_relative_time(timestamp_str: Optional[str]) -> str:
     if not timestamp_str:
         return "Time N/A"
     try:
-        # Handle potential 'Z' for UTC timezone
         if timestamp_str.endswith("Z"):
             timestamp_str = timestamp_str[:-1] + "+00:00"
         event_time = datetime.datetime.fromisoformat(timestamp_str).replace(
@@ -203,17 +241,14 @@ def format_relative_time(timestamp_str: Optional[str]) -> str:
 # New shared utility functions moved from artifact_reader.py and artifact_writer.py
 def sanitize_and_validate_path(
     filename: str, base_artifact_path: str
-) -> Tuple[bool, str, Optional[str], Optional[str]]:  # Added relative_filename output
+) -> Tuple[bool, str, Optional[str], Optional[str]]:
     """
     Sanitizes the filename and validates that it points to a path within the artifact workspace.
     Returns: (is_valid, message, full_path, relative_filename)
     """
     try:
-        # Normalize the received filename and join with the base artifact folder path
         normalized_filename = os.path.normpath(filename).lstrip(os.sep)
         joined_path = os.path.join(base_artifact_path, normalized_filename)
-
-        # Resolve the full absolute path to ensure no directory traversal attacks can occur
         normalized_joined_path = os.path.normpath(joined_path)
         if not normalized_joined_path.startswith(os.path.normpath(base_artifact_path)):
             return (
@@ -222,14 +257,11 @@ def sanitize_and_validate_path(
                 None,
                 None,
             )
-
         full_path = os.path.abspath(normalized_joined_path)
-
     except Exception as e:
         log.error(f"Error resolving path for '{filename}': {e}")
         return False, f"Internal error resolving path: {e}", None, None
 
-    # Ensure the final path is within the artifact folder
     normalized_base_path = os.path.normpath(base_artifact_path)
     if not (
         full_path.startswith(normalized_base_path + os.sep)
@@ -255,11 +287,8 @@ def sanitize_and_validate_path(
         )
 
     log.debug(f"Path validated: '{filename}' -> '{full_path}'")
-    # Calculate relative path *after* validation
     relative_path = os.path.relpath(full_path, normalized_base_path)
-    # Handle edge case where the path is the base itself
     relative_path = "." if relative_path == os.curdir else relative_path
-
     return True, "Path validated successfully.", full_path, relative_path
 
 
@@ -268,20 +297,16 @@ def list_directory_contents(directory_path: str) -> Tuple[bool, List[str]]:
     try:
         base_artifact_path = os.path.abspath(ARTIFACT_FOLDER)
         abs_directory_path = os.path.abspath(directory_path)
-
-        # Final safety check: ensure the directory itself is within the workspace
         if not abs_directory_path.startswith(base_artifact_path):
             log.error(
                 f"Security Error: Attempted to list directory outside workspace: {abs_directory_path}"
             )
-            return False, []  # Return empty list on security violation
-
+            return False, []
         if not os.path.isdir(abs_directory_path):
             log.warning(
                 f"Cannot list contents, path is not a directory: {abs_directory_path}"
             )
-            return False, []  # Not a directory, can't list
-
+            return False, []
         contents = os.listdir(abs_directory_path)
         log.info(f"Listed {len(contents)} items in directory: {abs_directory_path}")
         return True, contents

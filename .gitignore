@@ -3,8 +3,10 @@ __pycache__/
 */__pycache__/
 
 chroma_db*/*
+chroma_doc_archive*/*
 output/*
 output*/
 .env
-concatenate_project.py
-project_context.md
+.concatenate_project.py
+.project_context.md
+.project_response.md

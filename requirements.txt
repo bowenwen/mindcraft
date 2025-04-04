@@ -5,3 +5,4 @@ ollama >= 0.1.7   # Or later version
 beautifulsoup4 >= 4.9.0
 PyMuPDF >= 1.23.0
 gradio >= 4.0.0
+langchain-text-splitters

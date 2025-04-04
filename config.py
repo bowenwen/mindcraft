@@ -26,6 +26,15 @@ SEARXNG_TIMEOUT = int(os.environ.get("SEARXNG_TIMEOUT", 20))
 # --- Database Configuration ---
 DB_PATH = os.environ.get("DB_PATH", "./chroma_db")
 MEMORY_COLLECTION_NAME = os.environ.get("MEMORY_COLLECTION_NAME", "agent_memory")
+# --- NEW: Document Archive Database Configuration ---
+DOC_ARCHIVE_DB_PATH = os.environ.get("DOC_ARCHIVE_DB_PATH", "./chroma_doc_archive")
+DOC_ARCHIVE_COLLECTION_NAME = os.environ.get(
+    "DOC_ARCHIVE_COLLECTION_NAME", "doc_archive"
+)
+DOC_ARCHIVE_CHUNK_SIZE = int(os.environ.get("DOC_ARCHIVE_CHUNK_SIZE", 5000))
+DOC_ARCHIVE_CHUNK_OVERLAP = int(os.environ.get("DOC_ARCHIVE_CHUNK_OVERLAP", 150))
+DOC_ARCHIVE_QUERY_RESULTS = int(os.environ.get("DOC_ARCHIVE_QUERY_RESULTS", 5))
+
 
 # --- Task Queue Configuration ---
 TASK_QUEUE_PATH = f"{OUTPUT_FOLDER}/task_queue.json"
@@ -85,7 +94,9 @@ INITIAL_NEW_TASK_N = int(os.environ.get("INITIAL_NEW_TASK_N", 6))
 
 # --- UI Configuration ---
 UI_STEP_HISTORY_LENGTH = int(os.environ.get("UI_STEP_HISTORY_LENGTH", 10))
-UI_UPDATE_INTERVAL = os.environ.get("UI_UPDATE_INTERVAL", 0.5)
+UI_UPDATE_INTERVAL = float(
+    os.environ.get("UI_UPDATE_INTERVAL", 0.5)
+)  # Changed to float
 
 # --- Logging Configuration ---
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
@@ -95,10 +106,18 @@ try:
     os.makedirs(OUTPUT_FOLDER, exist_ok=True)
     os.makedirs(ARTIFACT_FOLDER, exist_ok=True)
     os.makedirs(SUMMARY_FOLDER, exist_ok=True)
+    os.makedirs(DB_PATH, exist_ok=True)  # Ensure main DB folder exists
+    os.makedirs(
+        DOC_ARCHIVE_DB_PATH, exist_ok=True
+    )  # <<<--- Ensure Doc Archive DB folder exists
     print(f"[CONFIG] Ensured output folders exist:")
     print(f"  Output:   {os.path.abspath(OUTPUT_FOLDER)}")
     print(f"  Artifacts:{os.path.abspath(ARTIFACT_FOLDER)}")
     print(f"  Summaries:{os.path.abspath(SUMMARY_FOLDER)}")
+    print(f"  Memory DB:{os.path.abspath(DB_PATH)}")
+    print(
+        f"  Doc DB:   {os.path.abspath(DOC_ARCHIVE_DB_PATH)}"
+    )  # <<<--- Print Doc Archive path
 except Exception as e:
     print(f"[CONFIG] WARNING: Could not create output folders: {e}")
 
@@ -115,3 +134,8 @@ print(f"  ENABLE_MEMORY_SUMMARIZATION={ENABLE_MEMORY_SUMMARIZATION}")
 print(f"  DELETE_MEMORIES_AFTER_SUMMARY={DELETE_MEMORIES_AFTER_SUMMARY}")
 print(f"  QLORA_DATASET_PATH={QLORA_DATASET_PATH}")
 print(f"  ARTIFACT_FOLDER={ARTIFACT_FOLDER}")
+print(f"  DOC_ARCHIVE_DB_PATH={DOC_ARCHIVE_DB_PATH}")  # <<<--- Print Doc Archive path
+print(f"  DOC_ARCHIVE_COLLECTION_NAME={DOC_ARCHIVE_COLLECTION_NAME}")
+print(f"  DOC_ARCHIVE_CHUNK_SIZE={DOC_ARCHIVE_CHUNK_SIZE}")
+print(f"  DOC_ARCHIVE_CHUNK_OVERLAP={DOC_ARCHIVE_CHUNK_OVERLAP}")
+print(f"  DOC_ARCHIVE_QUERY_RESULTS={DOC_ARCHIVE_QUERY_RESULTS}")

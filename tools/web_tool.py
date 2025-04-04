@@ -1,31 +1,37 @@
 # FILE: tools/web_tool.py
 import requests
+import datetime
 import re
 import traceback
 import json
 import io
-import random  # Added for User-Agent rotation
-from urllib.parse import urlparse  # Added for Referer generation
-from typing import Dict, Any
+import random
+import uuid
+import hashlib
+from urllib.parse import urlparse
+from typing import Dict, Any, Optional, List
+
 from bs4 import BeautifulSoup, NavigableString, Tag
 import fitz  # PyMuPDF
+import chromadb  # <<<--- NEW
+from langchain_text_splitters import RecursiveCharacterTextSplitter  # <<<--- NEW
 
 from .base import Tool
-import config
-from config import SEARXNG_BASE_URL, SEARXNG_TIMEOUT
+import config  # Use top-level import
+from utils import setup_doc_archive_chromadb  # <<<--- NEW
 
 import logging
 
 log = logging.getLogger("TOOL_Web")
 
-# List of common, relatively modern User-Agent strings
+# List of common, relatively modern User-Agent strings (unchanged)
 COMMON_USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/119.0",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36 Edg/118.0.2088.76",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Version/17.1 Safari/605.1.15",  # Safari
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Version/17.1 Safari/605.1.15",
 ]
 
 
@@ -33,7 +39,12 @@ class WebTool(Tool):
     """
     Performs web-related actions: searching using SearXNG or browsing/parsing a specific URL.
     Requires 'action' parameter: 'search' or 'browse'.
-    Attempts to mimic browser behavior to reduce blocking, but may still fail on sites with advanced bot detection.
+    'search' (requires 'query'): Uses SearXNG to find information. Returns search results.
+    'browse' (requires 'url', optional 'query'):
+        - If 'query' is NOT provided: Fetches and parses content (HTML, PDF, JSON, TXT). Returns full (possibly truncated) content.
+        - If 'query' IS provided: Fetches full content, chunks it, stores chunks in a document archive DB (if not already present),
+          then performs a semantic search on those chunks using the 'query', returning only the most relevant snippets.
+    Note: Browsing may fail on sites with strong bot protection (e.g., Cloudflare).
     """
 
     def __init__(self):
@@ -43,45 +54,65 @@ class WebTool(Tool):
                 "Performs web actions. Requires 'action' parameter. "
                 "Actions: "
                 "'search' (requires 'query'): Uses SearXNG to find information. Returns search results. "
-                "'browse' (requires 'url'): Fetches and parses content from a URL (HTML, PDF, JSON, TXT). Returns parsed content. "
+                "'browse' (requires 'url', optional 'query'): Fetches and parses content (HTML, PDF, JSON, TXT). "
+                "If 'query' is provided, fetches full content, archives it, and returns only relevant snippets matching the query. "
+                "Otherwise, returns the full (potentially truncated) page content. "
                 "Note: Browsing may fail on sites with strong bot protection (e.g., Cloudflare)."
             ),
         )
-        # Use a session object for connection pooling and cookie handling
+        # Session for browsing (unchanged)
         self.session = requests.Session()
-        # Session-wide headers (User-Agent will be set per-request)
         self.session.headers.update(
             {
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,application/pdf,*/*;q=0.8",
                 "Accept-Language": "en-US,en;q=0.5",
-                "Accept-Encoding": "gzip, deflate",  # Request compressed content
-                "Connection": "keep-alive",  # Keep connection open for potential reuse
-                "Upgrade-Insecure-Requests": "1",  # Signal preference for HTTPS
-                "DNT": "1",  # Signal "Do Not Track"
+                "Accept-Encoding": "gzip, deflate",
+                "Connection": "keep-alive",
+                "Upgrade-Insecure-Requests": "1",
+                "DNT": "1",
             }
         )
-        # For search action (checked during run)
+        # Headers for search (unchanged)
         self.search_headers = {"Accept": "application/json"}
+
+        # --- NEW: Document Archiving Setup ---
+        self.doc_archive_collection: Optional[chromadb.Collection] = None
+        try:
+            self.doc_archive_collection = setup_doc_archive_chromadb()
+            if self.doc_archive_collection is None:
+                log.error(
+                    "Document archive DB collection failed to initialize. Browse-with-query will not work."
+                )
+            else:
+                log.info("Document archive DB collection initialized successfully.")
+        except Exception as e:
+            log.critical(
+                f"Failed to initialize document archive DB: {e}", exc_info=True
+            )
+
+        self.text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=config.DOC_ARCHIVE_CHUNK_SIZE,
+            chunk_overlap=config.DOC_ARCHIVE_CHUNK_OVERLAP,
+            length_function=len,
+            is_separator_regex=False,
+            separators=["\n\n", "\n", ". ", "? ", "! ", " ", ""],  # Sensible defaults
+        )
+        # --- End NEW Setup ---
 
     def _get_browse_headers(self, url: str) -> Dict[str, str]:
         """Generates headers for a specific browse request, including a random User-Agent and Referer."""
-        headers = self.session.headers.copy()  # Start with session headers
+        headers = self.session.headers.copy()
         headers["User-Agent"] = random.choice(COMMON_USER_AGENTS)
-
-        # Add a Referer header based on the target URL's domain
         try:
             parsed_url = urlparse(url)
-            # Use the scheme and netloc (domain) as the referer base
             referer = f"{parsed_url.scheme}://{parsed_url.netloc}/"
             headers["Referer"] = referer
         except Exception:
-            # If URL parsing fails, don't add a referer
             log.warning(f"Could not parse URL '{url}' to generate Referer header.")
             pass
-
         return headers
 
-    # --- Helper methods from WebBrowserTool (unchanged) ---
+    # --- Helper methods for HTML/Text Cleaning (unchanged) ---
     def _clean_text_basic(self, text: str) -> str:
         if not text:
             return ""
@@ -167,6 +198,7 @@ class WebTool(Tool):
                 if row_content:
                     content.append("| " + " | ".join(row_content) + " |")
             return "\n".join(content) + "\n\n"
+
         if not content:
             child_contents = []
             for child in node.children:
@@ -174,6 +206,7 @@ class WebTool(Tool):
                 if child_text:
                     child_contents.append(child_text)
             content = [" ".join(child_contents).strip()]
+
         full_content = prefix + "".join(content) + suffix
         return self._clean_text_basic(full_content)
 
@@ -267,22 +300,22 @@ class WebTool(Tool):
 
     # --- End Helper methods ---
 
+    # _run_search method remains unchanged from previous version
     def _run_search(self, query: str) -> Dict[str, Any]:
         """Executes a search query against the configured SearXNG instance."""
         log.info(f"Executing SearXNG Search: '{query}'")
-        if not SEARXNG_BASE_URL:
+        if not config.SEARXNG_BASE_URL:
             return {"error": "SearXNG base URL is not configured for search action."}
 
         params = {"q": query, "format": "json"}
-        searxng_url = SEARXNG_BASE_URL.rstrip("/") + "/search"
+        searxng_url = config.SEARXNG_BASE_URL.rstrip("/") + "/search"
 
         try:
-            # Use a standard requests.get for search, as session/fancy headers are less critical here
             response = requests.get(
                 searxng_url,
                 params=params,
                 headers=self.search_headers,
-                timeout=SEARXNG_TIMEOUT,
+                timeout=config.SEARXNG_TIMEOUT,
             )
             response.raise_for_status()
 
@@ -294,7 +327,6 @@ class WebTool(Tool):
                 )
                 return {"error": "Failed JSON decode from SearXNG."}
 
-            # --- (Processing logic remains the same as before) ---
             processed = []
             if "infoboxes" in search_data and isinstance(
                 search_data["infoboxes"], list
@@ -362,10 +394,9 @@ class WebTool(Tool):
                 "results": processed,
                 "message": f"Search completed successfully, returning {len(processed)} results.",
             }
-        # --- (Error handling remains the same) ---
         except requests.exceptions.Timeout:
             log.error(
-                f"SearXNG request timed out ({SEARXNG_TIMEOUT}s) to {searxng_url}"
+                f"SearXNG request timed out ({config.SEARXNG_TIMEOUT}s) to {searxng_url}"
             )
             return {"error": "Web search timed out."}
         except requests.exceptions.RequestException as e:
@@ -375,9 +406,16 @@ class WebTool(Tool):
             log.exception(f"Unexpected error during SearXNG search: {e}")
             return {"error": f"Unexpected web search error."}
 
-    def _run_browse(self, url: str) -> Dict[str, Any]:
-        """Fetches and extracts text content from the provided URL using enhanced headers."""
-        log.info(f"Attempting to browse URL: {url}")
+    # --- MODIFIED: _run_browse ---
+    def _run_browse(self, url: str, query: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Fetches and extracts content. If query is provided, archives the content
+        and performs semantic search on chunks. Otherwise, returns full (truncated) content.
+        """
+        log.info(
+            f"Attempting to browse URL: {url}"
+            + (f" with query: '{query[:50]}...'" if query else "")
+        )
 
         if not url.startswith(("http://", "https://")):
             log.error(
@@ -385,32 +423,32 @@ class WebTool(Tool):
             )
             return {"error": "Invalid URL format. Must start with http:// or https://."}
 
+        # --- Step 1: Fetch content (common logic) ---
         extracted_text = ""
         content_source = "unknown"
+        final_url = url  # Placeholder, updated after request
+        response = None
 
         try:
-            # Generate headers for this specific request
             request_headers = self._get_browse_headers(url)
             log.debug(f"Using headers for {url}: {request_headers}")
 
-            # Use the session object to make the GET request
             response = self.session.get(
                 url,
-                headers=request_headers,  # Pass specific headers for this request
-                timeout=25,
-                allow_redirects=True,  # Ensure redirects are followed by the session
+                headers=request_headers,
+                timeout=25,  # Slightly longer timeout for potentially larger downloads
+                allow_redirects=True,
             )
 
-            # Check for non-success status codes *after* potential redirects
-            final_url = response.url  # URL after potential redirects
+            final_url = response.url
             log.info(
                 f"Request to {url} resulted in status {response.status_code} at {final_url}"
             )
+
             if response.status_code == 403:
                 log.warning(
                     f"Received 403 Forbidden for {final_url}. Site may be blocking automated access."
                 )
-                # Return a specific error for 403
                 return {
                     "error": f"Access denied (403 Forbidden) when trying to browse {final_url}. The site may block automated tools."
                 }
@@ -418,15 +456,14 @@ class WebTool(Tool):
                 log.warning(f"Received 404 Not Found for {final_url}.")
                 return {"error": f"Page not found (404 Not Found) at {final_url}."}
 
-            # Raise exceptions for other bad status codes (4xx client errors, 5xx server errors)
-            response.raise_for_status()
+            response.raise_for_status()  # Raise for other 4xx/5xx errors
 
             content_type = (
                 response.headers.get("Content-Type", "").lower().split(";")[0].strip()
             )
             log.info(f"URL Content-Type detected: '{content_type}' from {final_url}")
 
-            # --- (Parsing logic remains the same as before) ---
+            # --- Step 2: Parse content (common logic, but DO NOT truncate yet) ---
             if content_type == "application/pdf":
                 content_source = "pdf"
                 log.info("Parsing PDF content...")
@@ -443,9 +480,11 @@ class WebTool(Tool):
                             pdf_texts.append(page_text.strip())
                     doc.close()
                     full_text = "\n".join(pdf_texts).strip()
-                    extracted_text = self._clean_text_basic(full_text)
+                    extracted_text = self._clean_text_basic(
+                        full_text
+                    )  # Clean but don't truncate
                     log.info(
-                        f"Extracted text from PDF (Length: {len(extracted_text)})."
+                        f"Extracted text from PDF (Full Length: {len(extracted_text)})."
                     )
                 except Exception as pdf_err:
                     log.error(
@@ -456,9 +495,11 @@ class WebTool(Tool):
             elif content_type == "text/html":
                 content_source = "html_markdown"
                 log.info("Parsing HTML content to Markdown...")
-                extracted_text = self._parse_html_to_markdown(response.text)
+                extracted_text = self._parse_html_to_markdown(
+                    response.text
+                )  # Clean but don't truncate
                 log.info(
-                    f"Extracted text from HTML as Markdown (Length: {len(extracted_text)})."
+                    f"Extracted text from HTML as Markdown (Full Length: {len(extracted_text)})."
                 )
 
             elif content_type == "application/json":
@@ -466,7 +507,9 @@ class WebTool(Tool):
                 log.info("Parsing JSON content...")
                 try:
                     json_data = json.loads(response.text)
-                    extracted_text = json.dumps(json_data, indent=2, ensure_ascii=False)
+                    extracted_text = json.dumps(
+                        json_data, indent=2, ensure_ascii=False
+                    )  # No truncation needed here
                     log.info(f"Formatted JSON content (Length: {len(extracted_text)}).")
                 except json.JSONDecodeError as json_err:
                     log.error(f"Invalid JSON received from {final_url}: {json_err}")
@@ -477,15 +520,16 @@ class WebTool(Tool):
             elif content_type.startswith("text/"):
                 content_source = "text"
                 log.info(f"Parsing plain text content ({content_type})...")
-                extracted_text = self._clean_text_basic(response.text)
-                log.info(f"Extracted plain text (Length: {len(extracted_text)}).")
+                extracted_text = self._clean_text_basic(
+                    response.text
+                )  # Clean but don't truncate
+                log.info(f"Extracted plain text (Full Length: {len(extracted_text)}).")
 
             else:
                 log.warning(
                     f"Unsupported Content-Type '{content_type}' for URL {final_url}. Attempting fallback."
                 )
                 try:
-                    # Use response.content and decode carefully for fallback
                     fallback_text = self._clean_text_basic(
                         response.content.decode(
                             response.encoding or "utf-8", errors="replace"
@@ -495,7 +539,7 @@ class WebTool(Tool):
                         extracted_text = fallback_text
                         content_source = "text_fallback"
                         log.info(
-                            f"Extracted fallback text (Length: {len(extracted_text)})."
+                            f"Extracted fallback text (Full Length: {len(extracted_text)})."
                         )
                     else:
                         return {
@@ -508,70 +552,232 @@ class WebTool(Tool):
                     return {
                         "error": f"Cannot browse: Unsupported content type '{content_type}' and fallback extraction failed."
                     }
-            # --- (Truncation and result formatting remains the same) ---
-            if not extracted_text:
+
+            # Check if we actually got text
+            if not extracted_text or not extracted_text.strip():
                 log.warning(
                     f"Could not extract significant textual content ({content_source}) from {final_url}"
                 )
                 return {
                     "status": "success",
                     "action": "browse",
-                    "url": final_url,  # Return the final URL after redirects
+                    "url": final_url,
                     "content": None,
                     "message": f"No significant textual content found via {content_source} parser.",
+                    "query_mode": bool(query),
                 }
 
-            limit = config.CONTEXT_TRUNCATION_LIMIT
-            truncated = False
-            message = "Content browsed and parsed successfully."
-            if len(extracted_text) > limit:
+            # --- Step 3: Handle based on whether a query was provided ---
+            if query and self.doc_archive_collection:
                 log.info(
-                    f"Content from {final_url} truncated from {len(extracted_text)} to {limit} characters."
+                    f"Query provided for {final_url}. Archiving and searching chunks."
                 )
-                extracted_text = extracted_text[:limit] + "\n\n... [CONTENT TRUNCATED]"
-                truncated = True
-                message = f"Content browsed successfully but was truncated to approximately {limit} characters."
+                try:
+                    # Generate document ID based on final URL hash
+                    doc_id = hashlib.sha256(final_url.encode("utf-8")).hexdigest()
+                    log.debug(f"Generated doc_id '{doc_id}' for URL '{final_url}'")
 
-            result = {
-                "status": "success",
-                "action": "browse",
-                "url": final_url,  # Return the final URL
-                "content_source": content_source,
-                "content": extracted_text,
-                "truncated": truncated,
-                "message": message,
-            }
+                    # Check if document chunks already exist
+                    existing_chunks = self.doc_archive_collection.get(
+                        where={"doc_id": doc_id},
+                        include=[],  # Only need to check existence
+                    )
 
-            log.info(
-                f"Successfully browsed and extracted content from {final_url} (Source: {content_source}, Length: {len(extracted_text)} chars)."
-            )
-            return result
+                    if (
+                        existing_chunks
+                        and existing_chunks["ids"]
+                        and len(existing_chunks["ids"]) > 0
+                    ):
+                        log.info(
+                            f"Document '{doc_id}' already exists in archive ({len(existing_chunks['ids'])} chunks). Skipping add."
+                        )
+                    else:
+                        log.info(
+                            f"Document '{doc_id}' not found in archive. Chunking and adding..."
+                        )
+                        # Chunk the text
+                        chunks = self.text_splitter.split_text(extracted_text)
+                        if not chunks:
+                            log.warning(
+                                f"Text splitter returned no chunks for {final_url}."
+                            )
+                            # Fallback to original behavior? Or return error? Let's return an informative message.
+                            return {
+                                "status": "completed_with_issue",
+                                "action": "browse",
+                                "url": final_url,
+                                "message": "Content extracted but failed to chunk for querying.",
+                                "query_mode": True,
+                            }
 
-        # --- (Error handling remains mostly the same, updated URL in messages) ---
+                        log.info(
+                            f"Split content into {len(chunks)} chunks (Size: {config.DOC_ARCHIVE_CHUNK_SIZE}, Overlap: {config.DOC_ARCHIVE_CHUNK_OVERLAP})."
+                        )
+
+                        # Prepare for ChromaDB batch add
+                        chunk_docs = []
+                        chunk_metadatas = []
+                        chunk_ids = []
+                        for i, chunk_text in enumerate(chunks):
+                            chunk_id = f"{doc_id}-{i}"
+                            metadata = {
+                                "doc_id": doc_id,
+                                "url": final_url,
+                                "chunk_index": i,
+                                "source_type": content_source,
+                                "timestamp": datetime.datetime.now(
+                                    datetime.timezone.utc
+                                ).isoformat(),
+                            }
+                            # Clean metadata (ensure simple types)
+                            cleaned_metadata = {k: str(v) for k, v in metadata.items()}
+
+                            chunk_docs.append(chunk_text)
+                            chunk_metadatas.append(cleaned_metadata)
+                            chunk_ids.append(chunk_id)
+
+                        # Add chunks to the archive collection
+                        if chunk_ids:
+                            log.info(
+                                f"Adding {len(chunk_ids)} chunks to document archive..."
+                            )
+                            self.doc_archive_collection.add(
+                                documents=chunk_docs,
+                                metadatas=chunk_metadatas,
+                                ids=chunk_ids,
+                            )
+                            log.info(
+                                f"Successfully added chunks for document '{doc_id}'."
+                            )
+
+                    # Query the archived chunks for this specific document
+                    log.info(
+                        f"Querying archive for '{query[:50]}...' within doc '{doc_id}'..."
+                    )
+                    n_query_results = config.DOC_ARCHIVE_QUERY_RESULTS
+                    query_results = self.doc_archive_collection.query(
+                        query_texts=[query],
+                        n_results=n_query_results,
+                        where={"doc_id": doc_id},  # <<<--- Filter by doc_id
+                        include=["metadatas", "documents", "distances"],
+                    )
+
+                    # Format the query results
+                    snippets = []
+                    if (
+                        query_results
+                        and query_results.get("ids")
+                        and query_results["ids"][0]
+                    ):
+                        log.info(
+                            f"Found {len(query_results['ids'][0])} relevant snippets."
+                        )
+                        for i, chunk_id in enumerate(query_results["ids"][0]):
+                            doc = query_results["documents"][0][i]
+                            meta = query_results["metadatas"][0][i]
+                            dist = query_results["distances"][0][i]
+                            snippets.append(
+                                {
+                                    "chunk_id": chunk_id,
+                                    "content": doc,
+                                    "distance": f"{dist:.4f}",
+                                    "chunk_index": meta.get("chunk_index", "N/A"),
+                                }
+                            )
+                    else:
+                        log.info(
+                            "No relevant snippets found in archive for the query within this document."
+                        )
+
+                    return {
+                        "status": "success",
+                        "action": "browse",
+                        "url": final_url,
+                        "query_mode": True,
+                        "query": query,
+                        "retrieved_snippets": snippets,
+                        "message": f"Focused retrieval performed on archived content. Found {len(snippets)} relevant snippets.",
+                    }
+
+                except Exception as archive_err:
+                    log.exception(
+                        f"Error during document archiving or querying for {final_url}: {archive_err}"
+                    )
+                    return {
+                        "error": f"Error during document archiving/querying: {archive_err}",
+                        "query_mode": True,
+                    }
+
+            elif query and not self.doc_archive_collection:
+                log.error(
+                    "Query provided for browse, but document archive DB is not available."
+                )
+                return {
+                    "error": "Cannot perform query browse: Document archive database is not configured or failed to initialize.",
+                    "query_mode": True,
+                }
+
+            else:  # No query provided, original behavior
+                log.info(
+                    f"No query provided for {final_url}. Returning full (truncated) content."
+                )
+                limit = config.CONTEXT_TRUNCATION_LIMIT
+                truncated = False
+                message = "Content browsed and parsed successfully."
+                if len(extracted_text) > limit:
+                    log.info(
+                        f"Content from {final_url} truncated from {len(extracted_text)} to {limit} characters."
+                    )
+                    extracted_text = (
+                        extracted_text[:limit] + "\n\n... [CONTENT TRUNCATED]"
+                    )
+                    truncated = True
+                    message = f"Content browsed successfully but was truncated to approximately {limit} characters."
+
+                result = {
+                    "status": "success",
+                    "action": "browse",
+                    "url": final_url,
+                    "content_source": content_source,
+                    "content": extracted_text,  # Return truncated text
+                    "truncated": truncated,
+                    "message": message,
+                    "query_mode": False,
+                }
+                log.info(
+                    f"Successfully browsed and extracted content from {final_url} (Source: {content_source}, Length: {len(extracted_text)} chars, Truncated: {truncated})."
+                )
+                return result
+
+        # --- Step 4: Error Handling (mostly unchanged, uses final_url) ---
         except requests.exceptions.Timeout:
             log.error(f"Request timed out while browsing {url}")
-            # Use the original requested URL in the timeout error message
-            return {"error": f"Request timed out accessing URL: {url}"}
+            return {
+                "error": f"Request timed out accessing URL: {url}",
+                "query_mode": bool(query),
+            }
         except requests.exceptions.RequestException as e:
-            # Log the error with the original URL, but the error message might contain the final URL if redirection happened before failure
             log.error(f"Request failed for URL {url}: {e}")
             status_code = (
                 e.response.status_code
                 if hasattr(e, "response") and e.response is not None
                 else "N/A"
             )
-            # Use the final URL from the response if available, otherwise the original URL
             error_url = (
                 e.response.url
                 if hasattr(e, "response") and e.response is not None
                 else url
             )
             return {
-                "error": f"Failed to retrieve URL {error_url}. Status: {status_code}. Error: {e}"
+                "error": f"Failed to retrieve URL {error_url}. Status: {status_code}. Error: {e}",
+                "query_mode": bool(query),
             }
         except Exception as e:
             log.exception(f"Unexpected error during web browse for {url}: {e}")
-            return {"error": f"Unexpected error browsing URL {url}: {e}"}
+            return {
+                "error": f"Unexpected error browsing URL {url}: {e}",
+                "query_mode": bool(query),
+            }
 
     def run(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """Runs either the search or browse action based on parameters."""
@@ -590,13 +796,22 @@ class WebTool(Tool):
                     "error": "Missing or invalid 'query' parameter for 'search' action."
                 }
             return self._run_search(query)
+
         elif action == "browse":
             url = parameters.get("url")
             if not url or not isinstance(url, str) or not url.strip():
                 return {
                     "error": "Missing or invalid 'url' parameter for 'browse' action."
                 }
-            return self._run_browse(url)
+            # Get optional query
+            query = parameters.get("query")
+            if query is not None and (not isinstance(query, str) or not query.strip()):
+                log.warning(
+                    f"Received invalid 'query' parameter for browse (type: {type(query)}). Ignoring query."
+                )
+                query = None  # Treat invalid query as no query
+            return self._run_browse(url, query)  # Pass query to _run_browse
+
         else:
             log.error(f"Invalid action specified for web tool: '{action}'")
             return {
