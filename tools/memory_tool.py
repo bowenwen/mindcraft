@@ -103,14 +103,10 @@ class MemoryTool(Tool):
                 }
 
         except Exception as e:
-            log.exception(
-                f"Unexpected error during memory tool 'search' action: {e}"
-            )
+            log.exception(f"Unexpected error during memory tool 'search' action: {e}")
             return {"error": f"Unexpected error during memory search: {e}"}
 
-    def _run_write(
-        self, content: str, memory_instance: AgentMemory
-    ) -> Dict[str, Any]:
+    def _run_write(self, content: str, memory_instance: AgentMemory) -> Dict[str, Any]:
         """Writes the provided content to the agent's memory."""
         log.info(f"Executing Memory Write: '{content[:100]}...'")
         if not content or not isinstance(content, str) or not content.strip():
@@ -151,9 +147,7 @@ class MemoryTool(Tool):
         """Runs either the search or write action based on parameters."""
         if not memory_instance:
             log.error("Memory instance was not provided to MemoryTool.")
-            return {
-                "error": "Memory Tool internal error: Memory instance missing."
-            }
+            return {"error": "Memory Tool internal error: Memory instance missing."}
 
         if not isinstance(parameters, dict):
             log.error(f"Invalid params type: {type(parameters)}")
@@ -165,18 +159,26 @@ class MemoryTool(Tool):
 
         if action == "search":
             if not identity_statement:
-                 log.error("Agent identity statement was not provided for 'search' action.")
-                 return {"error": "Memory Tool internal error: Agent identity missing for search."}
+                log.error(
+                    "Agent identity statement was not provided for 'search' action."
+                )
+                return {
+                    "error": "Memory Tool internal error: Agent identity missing for search."
+                }
             query = parameters.get("query")
             if not query or not isinstance(query, str) or not query.strip():
                 return {
                     "error": "Missing or invalid 'query' parameter for 'search' action."
                 }
             try:
-                n_results = int(parameters.get("n_results", 10)) # Use a reasonable default
-                n_results = max(3, min(25, n_results)) # Clamp results
+                n_results = int(
+                    parameters.get("n_results", 10)
+                )  # Use a reasonable default
+                n_results = max(3, min(25, n_results))  # Clamp results
             except (ValueError, TypeError):
-                log.warning(f"Invalid n_results value: {parameters.get('n_results')}. Using default 10.")
+                log.warning(
+                    f"Invalid n_results value: {parameters.get('n_results')}. Using default 10."
+                )
                 n_results = 10
 
             return self._run_search(
@@ -186,14 +188,16 @@ class MemoryTool(Tool):
         elif action == "write":
             content = parameters.get("content")
             # Check for content specifically for write action
-            if content is None or not isinstance(content, str): # Allow empty string technically, but maybe enforce non-empty?
-                 return {"error": "Missing or invalid 'content' parameter (must be a string) for 'write' action."}
+            if content is None or not isinstance(
+                content, str
+            ):  # Allow empty string technically, but maybe enforce non-empty?
+                return {
+                    "error": "Missing or invalid 'content' parameter (must be a string) for 'write' action."
+                }
             # if not content.strip(): # Optionally enforce non-empty, non-whitespace content
             #     return {"error": "Content parameter cannot be empty or whitespace for 'write' action."}
             return self._run_write(content, memory_instance)
 
         else:
             log.error(f"Invalid action specified for memory tool: '{action}'")
-            return {
-                "error": "Invalid 'action' specified. Must be 'search' or 'write'."
-            }
+            return {"error": "Invalid 'action' specified. Must be 'search' or 'write'."}

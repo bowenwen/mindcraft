@@ -3,13 +3,15 @@
 import datetime
 from typing import Dict, Any, List
 import logging
-import os # For os.path.join
+import os  # For os.path.join
 
 from .base import Tool
+
 # Note: This tool doesn't directly interact with config or utils,
 # it receives the necessary data from the agent during the run call.
 
 log = logging.getLogger("TOOL_Status")
+
 
 class StatusTool(Tool):
     """
@@ -26,7 +28,7 @@ class StatusTool(Tool):
                 "agent identity, task queue summary (pending, in-progress, recent completed/failed), "
                 "and memory usage summary. "
                 "**This tool takes NO parameters.**"
-            )
+            ),
         )
 
     def _format_task_list(self, tasks: List[Dict[str, Any]], max_items: int = 5) -> str:
@@ -35,20 +37,24 @@ class StatusTool(Tool):
             return "  None"
         lines = []
         for i, task in enumerate(tasks[:max_items]):
-            desc_snippet = task.get('Description', 'N/A')[:70]
-            prio_str = f" (Prio: {task.get('Priority', 'N/A')})" if 'Priority' in task else ""
+            desc_snippet = task.get("Description", "N/A")[:70]
+            prio_str = (
+                f" (Prio: {task.get('Priority', 'N/A')})" if "Priority" in task else ""
+            )
             id_str = f" (ID: {task.get('ID', 'N/A')[:8]}...)"
             lines.append(f"  - {desc_snippet}...{prio_str}{id_str}")
         if len(tasks) > max_items:
             lines.append(f"  ... and {len(tasks) - max_items} more.")
         return "\n".join(lines)
 
-    def run(self,
-            agent_identity: str,
-            task_queue_summary: Dict[str, List[Dict[str, Any]]],
-            memory_summary: Dict[str, int],
-            ollama_status: str,
-            searxng_status: str) -> Dict[str, Any]:
+    def run(
+        self,
+        agent_identity: str,
+        task_queue_summary: Dict[str, List[Dict[str, Any]]],
+        memory_summary: Dict[str, int],
+        ollama_status: str,
+        searxng_status: str,
+    ) -> Dict[str, Any]:
         """
         Constructs the status report string from the provided data.
         The agent gathers this data and passes it here.
@@ -56,11 +62,13 @@ class StatusTool(Tool):
         log.info("Executing Status Report generation...")
         try:
             now_utc = datetime.datetime.now(datetime.timezone.utc)
-            now_local = now_utc.astimezone() # Convert to local time for display
+            now_local = now_utc.astimezone()  # Convert to local time for display
 
             report_parts = []
             report_parts.append(f"## Agent Status Report")
-            report_parts.append(f"**Generated:** {now_local.strftime('%Y-%m-%d %H:%M:%S %Z')} ({now_utc.isoformat()})")
+            report_parts.append(
+                f"**Generated:** {now_local.strftime('%Y-%m-%d %H:%M:%S %Z')} ({now_utc.isoformat()})"
+            )
             report_parts.append("\n**Connectivity:**")
             report_parts.append(f"- Ollama API: {ollama_status}")
             report_parts.append(f"- SearXNG API: {searxng_status}")
@@ -77,7 +85,9 @@ class StatusTool(Tool):
             # In Progress
             in_progress_tasks = task_queue_summary.get("in_progress", [])
             report_parts.append(f"- In Progress ({len(in_progress_tasks)}):")
-            report_parts.append(self._format_task_list(in_progress_tasks, 1)) # Usually only 1
+            report_parts.append(
+                self._format_task_list(in_progress_tasks, 1)
+            )  # Usually only 1
 
             # Recently Completed (Most recent first)
             completed_tasks = task_queue_summary.get("completed", [])
@@ -92,7 +102,9 @@ class StatusTool(Tool):
             report_parts.append("\n**Memory Summary (by type):**")
             if memory_summary:
                 # Sort by count descending for relevance
-                sorted_mem_summary = sorted(memory_summary.items(), key=lambda item: item[1], reverse=True)
+                sorted_mem_summary = sorted(
+                    memory_summary.items(), key=lambda item: item[1], reverse=True
+                )
                 for mem_type, count in sorted_mem_summary:
                     report_parts.append(f"- {mem_type}: {count}")
             else:
@@ -105,7 +117,7 @@ class StatusTool(Tool):
 
             return {
                 "status": "success",
-                "action": "status_report", # Use a specific action name
+                "action": "status_report",  # Use a specific action name
                 "report_content": report_content,
                 "message": "Agent status report generated.",
             }

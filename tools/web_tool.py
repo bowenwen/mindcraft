@@ -4,8 +4,8 @@ import re
 import traceback
 import json
 import io
-import random # Added for User-Agent rotation
-from urllib.parse import urlparse # Added for Referer generation
+import random  # Added for User-Agent rotation
+from urllib.parse import urlparse  # Added for Referer generation
 from typing import Dict, Any
 from bs4 import BeautifulSoup, NavigableString, Tag
 import fitz  # PyMuPDF
@@ -25,8 +25,9 @@ COMMON_USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/119.0",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36 Edg/118.0.2088.76",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Version/17.1 Safari/605.1.15", # Safari
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Version/17.1 Safari/605.1.15",  # Safari
 ]
+
 
 class WebTool(Tool):
     """
@@ -49,20 +50,22 @@ class WebTool(Tool):
         # Use a session object for connection pooling and cookie handling
         self.session = requests.Session()
         # Session-wide headers (User-Agent will be set per-request)
-        self.session.headers.update({
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,application/pdf,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Accept-Encoding": "gzip, deflate", # Request compressed content
-            "Connection": "keep-alive",         # Keep connection open for potential reuse
-            "Upgrade-Insecure-Requests": "1",   # Signal preference for HTTPS
-            "DNT": "1",                         # Signal "Do Not Track"
-        })
+        self.session.headers.update(
+            {
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,application/pdf,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
+                "Accept-Encoding": "gzip, deflate",  # Request compressed content
+                "Connection": "keep-alive",  # Keep connection open for potential reuse
+                "Upgrade-Insecure-Requests": "1",  # Signal preference for HTTPS
+                "DNT": "1",  # Signal "Do Not Track"
+            }
+        )
         # For search action (checked during run)
         self.search_headers = {"Accept": "application/json"}
 
     def _get_browse_headers(self, url: str) -> Dict[str, str]:
         """Generates headers for a specific browse request, including a random User-Agent and Referer."""
-        headers = self.session.headers.copy() # Start with session headers
+        headers = self.session.headers.copy()  # Start with session headers
         headers["User-Agent"] = random.choice(COMMON_USER_AGENTS)
 
         # Add a Referer header based on the target URL's domain
@@ -89,74 +92,179 @@ class WebTool(Tool):
     def _extract_text_from_html_node(self, node: Tag) -> str:
         if isinstance(node, NavigableString):
             return re.sub(r"\s+", " ", str(node)).strip()
-        if not isinstance(node, Tag): return ""
-        content = []; tag_name = node.name.lower(); prefix = ""; suffix = "\n\n"
-        if tag_name in ["h1", "h2", "h3", "h4", "h5", "h6"]: prefix = "#" * int(tag_name[1]) + " "
-        elif tag_name == "p": pass
+        if not isinstance(node, Tag):
+            return ""
+        content = []
+        tag_name = node.name.lower()
+        prefix = ""
+        suffix = "\n\n"
+        if tag_name in ["h1", "h2", "h3", "h4", "h5", "h6"]:
+            prefix = "#" * int(tag_name[1]) + " "
+        elif tag_name == "p":
+            pass
         elif tag_name in ["ul", "ol"]:
             for i, item in enumerate(node.find_all("li", recursive=False)):
                 item_prefix = "* " if tag_name == "ul" else f"{i+1}. "
                 item_content = self._extract_text_from_html_node(item).strip()
-                if item_content: content.append(item_prefix + item_content)
-            suffix = "\n"; prefix = ""
+                if item_content:
+                    content.append(item_prefix + item_content)
+            suffix = "\n"
+            prefix = ""
         elif tag_name in ["pre", "code"]:
             code_text = node.get_text(strip=True)
-            if "\n" in code_text: prefix = "```\n"; suffix = "\n```\n\n"; content = [code_text]
-            else: prefix = "`"; suffix = "` "; content = [code_text]
+            if "\n" in code_text:
+                prefix = "```\n"
+                suffix = "\n```\n\n"
+                content = [code_text]
+            else:
+                prefix = "`"
+                suffix = "` "
+                content = [code_text]
             return prefix + "".join(content) + suffix
         elif tag_name == "a":
-            href = node.get("href"); text = node.get_text(strip=True)
-            if text and href and href.startswith(("http://", "https://")): return f"[{text}]({href})"
-            elif text: return text
-            else: return ""
-        elif tag_name in ["strong", "b"]: prefix = "**"; suffix = "** "
-        elif tag_name in ["em", "i"]: prefix = "*"; suffix = "* "
-        elif tag_name in ["br"]: return "\n"
-        elif tag_name in ["hr"]: return "---\n\n"
-        elif tag_name in ["script","style","nav","header","footer","aside","form","button","select","option","noscript",]: return ""
-        elif tag_name in ["div", "span", "section", "article", "main", "td", "th"]: suffix = "\n" if tag_name in ["span"] else "\n\n"; pass
+            href = node.get("href")
+            text = node.get_text(strip=True)
+            if text and href and href.startswith(("http://", "https://")):
+                return f"[{text}]({href})"
+            elif text:
+                return text
+            else:
+                return ""
+        elif tag_name in ["strong", "b"]:
+            prefix = "**"
+            suffix = "** "
+        elif tag_name in ["em", "i"]:
+            prefix = "*"
+            suffix = "* "
+        elif tag_name in ["br"]:
+            return "\n"
+        elif tag_name in ["hr"]:
+            return "---\n\n"
+        elif tag_name in [
+            "script",
+            "style",
+            "nav",
+            "header",
+            "footer",
+            "aside",
+            "form",
+            "button",
+            "select",
+            "option",
+            "noscript",
+        ]:
+            return ""
+        elif tag_name in ["div", "span", "section", "article", "main", "td", "th"]:
+            suffix = "\n" if tag_name in ["span"] else "\n\n"
+            pass
         elif tag_name in ["table"]:
             content.append("\n| Header 1 | Header 2 | ... |\n|---|---|---|")
             for row in node.find_all("tr"):
-                row_content = [self._extract_text_from_html_node(cell).strip() for cell in row.find_all(["th", "td"])]
-                if row_content: content.append("| " + " | ".join(row_content) + " |")
+                row_content = [
+                    self._extract_text_from_html_node(cell).strip()
+                    for cell in row.find_all(["th", "td"])
+                ]
+                if row_content:
+                    content.append("| " + " | ".join(row_content) + " |")
             return "\n".join(content) + "\n\n"
         if not content:
             child_contents = []
             for child in node.children:
                 child_text = self._extract_text_from_html_node(child)
-                if child_text: child_contents.append(child_text)
+                if child_text:
+                    child_contents.append(child_text)
             content = [" ".join(child_contents).strip()]
         full_content = prefix + "".join(content) + suffix
         return self._clean_text_basic(full_content)
 
     def _parse_html_to_markdown(self, html_content: str) -> str:
-        soup = BeautifulSoup(html_content, "html.parser"); body = soup.find("body")
-        if not body: return self._clean_text_basic(soup.get_text())
-        main_content_selectors = ["main","article",".main",".content","#main","#content","body",]
+        soup = BeautifulSoup(html_content, "html.parser")
+        body = soup.find("body")
+        if not body:
+            return self._clean_text_basic(soup.get_text())
+        main_content_selectors = [
+            "main",
+            "article",
+            ".main",
+            ".content",
+            "#main",
+            "#content",
+            "body",
+        ]
         main_node = None
         for selector in main_content_selectors:
             try:
-                if selector == "body": main_node = body; break
+                if selector == "body":
+                    main_node = body
+                    break
                 node = body.select_one(selector)
-                if node: log.debug(f"Found main content using selector: '{selector}'"); main_node = node; break
-            except Exception: log.warning(f"Selector '{selector}' failed.", exc_info=False); continue
-        if not main_node: log.warning("Could not identify specific main content area, parsing entire body."); main_node = body
+                if node:
+                    log.debug(f"Found main content using selector: '{selector}'")
+                    main_node = node
+                    break
+            except Exception:
+                log.warning(f"Selector '{selector}' failed.", exc_info=False)
+                continue
+        if not main_node:
+            log.warning(
+                "Could not identify specific main content area, parsing entire body."
+            )
+            main_node = body
         extracted_text = self._extract_text_from_html_node(main_node)
-        lines = extracted_text.split("\n"); cleaned_lines = [];
+        lines = extracted_text.split("\n")
+        cleaned_lines = []
         for line in lines:
             stripped_line = line.strip()
-            if stripped_line: cleaned_lines.append(stripped_line)
+            if stripped_line:
+                cleaned_lines.append(stripped_line)
         final_text = ""
         for i, line in enumerate(cleaned_lines):
             final_text += line
-            is_block_end = not line.startswith(("* ","1.","2.","3.","4.","5.","6.","7.","8.","9.","#","`","|","-",))
+            is_block_end = not line.startswith(
+                (
+                    "* ",
+                    "1.",
+                    "2.",
+                    "3.",
+                    "4.",
+                    "5.",
+                    "6.",
+                    "7.",
+                    "8.",
+                    "9.",
+                    "#",
+                    "`",
+                    "|",
+                    "-",
+                )
+            )
             next_is_block_start = False
-            if i + 1 < len(cleaned_lines): next_is_block_start = cleaned_lines[i + 1].startswith(("* ","1.","2.","3.","4.","5.","6.","7.","8.","9.","#","`","|","-",))
+            if i + 1 < len(cleaned_lines):
+                next_is_block_start = cleaned_lines[i + 1].startswith(
+                    (
+                        "* ",
+                        "1.",
+                        "2.",
+                        "3.",
+                        "4.",
+                        "5.",
+                        "6.",
+                        "7.",
+                        "8.",
+                        "9.",
+                        "#",
+                        "`",
+                        "|",
+                        "-",
+                    )
+                )
             if i < len(cleaned_lines) - 1:
-                if is_block_end and not next_is_block_start: final_text += "\n\n"
-                else: final_text += "\n"
+                if is_block_end and not next_is_block_start:
+                    final_text += "\n\n"
+                else:
+                    final_text += "\n"
         return final_text.strip()
+
     # --- End Helper methods ---
 
     def _run_search(self, query: str) -> Dict[str, Any]:
@@ -188,7 +296,9 @@ class WebTool(Tool):
 
             # --- (Processing logic remains the same as before) ---
             processed = []
-            if "infoboxes" in search_data and isinstance(search_data["infoboxes"], list):
+            if "infoboxes" in search_data and isinstance(
+                search_data["infoboxes"], list
+            ):
                 for ib in search_data["infoboxes"]:
                     if isinstance(ib, dict):
                         content = ib.get("content")
@@ -286,21 +396,27 @@ class WebTool(Tool):
             # Use the session object to make the GET request
             response = self.session.get(
                 url,
-                headers=request_headers, # Pass specific headers for this request
+                headers=request_headers,  # Pass specific headers for this request
                 timeout=25,
-                allow_redirects=True # Ensure redirects are followed by the session
+                allow_redirects=True,  # Ensure redirects are followed by the session
             )
 
             # Check for non-success status codes *after* potential redirects
-            final_url = response.url # URL after potential redirects
-            log.info(f"Request to {url} resulted in status {response.status_code} at {final_url}")
+            final_url = response.url  # URL after potential redirects
+            log.info(
+                f"Request to {url} resulted in status {response.status_code} at {final_url}"
+            )
             if response.status_code == 403:
-                 log.warning(f"Received 403 Forbidden for {final_url}. Site may be blocking automated access.")
-                 # Return a specific error for 403
-                 return {"error": f"Access denied (403 Forbidden) when trying to browse {final_url}. The site may block automated tools."}
+                log.warning(
+                    f"Received 403 Forbidden for {final_url}. Site may be blocking automated access."
+                )
+                # Return a specific error for 403
+                return {
+                    "error": f"Access denied (403 Forbidden) when trying to browse {final_url}. The site may block automated tools."
+                }
             elif response.status_code == 404:
-                 log.warning(f"Received 404 Not Found for {final_url}.")
-                 return {"error": f"Page not found (404 Not Found) at {final_url}."}
+                log.warning(f"Received 404 Not Found for {final_url}.")
+                return {"error": f"Page not found (404 Not Found) at {final_url}."}
 
             # Raise exceptions for other bad status codes (4xx client errors, 5xx server errors)
             response.raise_for_status()
@@ -332,7 +448,9 @@ class WebTool(Tool):
                         f"Extracted text from PDF (Length: {len(extracted_text)})."
                     )
                 except Exception as pdf_err:
-                    log.error(f"Error parsing PDF from {final_url}: {pdf_err}", exc_info=True)
+                    log.error(
+                        f"Error parsing PDF from {final_url}: {pdf_err}", exc_info=True
+                    )
                     return {"error": f"Failed to parse PDF content. Error: {pdf_err}"}
 
             elif content_type == "text/html":
@@ -348,12 +466,8 @@ class WebTool(Tool):
                 log.info("Parsing JSON content...")
                 try:
                     json_data = json.loads(response.text)
-                    extracted_text = json.dumps(
-                        json_data, indent=2, ensure_ascii=False
-                    )
-                    log.info(
-                        f"Formatted JSON content (Length: {len(extracted_text)})."
-                    )
+                    extracted_text = json.dumps(json_data, indent=2, ensure_ascii=False)
+                    log.info(f"Formatted JSON content (Length: {len(extracted_text)}).")
                 except json.JSONDecodeError as json_err:
                     log.error(f"Invalid JSON received from {final_url}: {json_err}")
                     return {
@@ -372,7 +486,11 @@ class WebTool(Tool):
                 )
                 try:
                     # Use response.content and decode carefully for fallback
-                    fallback_text = self._clean_text_basic(response.content.decode(response.encoding or 'utf-8', errors='replace'))
+                    fallback_text = self._clean_text_basic(
+                        response.content.decode(
+                            response.encoding or "utf-8", errors="replace"
+                        )
+                    )
                     if fallback_text and len(fallback_text) > 50:
                         extracted_text = fallback_text
                         content_source = "text_fallback"
@@ -398,7 +516,7 @@ class WebTool(Tool):
                 return {
                     "status": "success",
                     "action": "browse",
-                    "url": final_url, # Return the final URL after redirects
+                    "url": final_url,  # Return the final URL after redirects
                     "content": None,
                     "message": f"No significant textual content found via {content_source} parser.",
                 }
@@ -417,7 +535,7 @@ class WebTool(Tool):
             result = {
                 "status": "success",
                 "action": "browse",
-                "url": final_url, # Return the final URL
+                "url": final_url,  # Return the final URL
                 "content_source": content_source,
                 "content": extracted_text,
                 "truncated": truncated,
@@ -443,7 +561,11 @@ class WebTool(Tool):
                 else "N/A"
             )
             # Use the final URL from the response if available, otherwise the original URL
-            error_url = e.response.url if hasattr(e, "response") and e.response is not None else url
+            error_url = (
+                e.response.url
+                if hasattr(e, "response") and e.response is not None
+                else url
+            )
             return {
                 "error": f"Failed to retrieve URL {error_url}. Status: {status_code}. Error: {e}"
             }
@@ -471,7 +593,9 @@ class WebTool(Tool):
         elif action == "browse":
             url = parameters.get("url")
             if not url or not isinstance(url, str) or not url.strip():
-                return {"error": "Missing or invalid 'url' parameter for 'browse' action."}
+                return {
+                    "error": "Missing or invalid 'url' parameter for 'browse' action."
+                }
             return self._run_browse(url)
         else:
             log.error(f"Invalid action specified for web tool: '{action}'")

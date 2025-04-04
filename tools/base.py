@@ -1,8 +1,10 @@
 # autonomous_agent/tools/base.py
 from typing import Dict, Any
 
+
 class Tool:
     """Base class for tools the agent can use."""
+
     def __init__(self, name: str, description: str):
         if not name or not description:
             raise ValueError("Tool name and description cannot be empty.")

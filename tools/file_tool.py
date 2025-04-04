@@ -7,9 +7,7 @@ from .base import Tool
 from config import ARTIFACT_FOLDER, CONTEXT_TRUNCATION_LIMIT
 from utils import sanitize_and_validate_path, list_directory_contents
 
-logging.basicConfig(
-    level=logging.INFO, format="[%(levelname)s][File Tool] %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="[%(levelname)s][File Tool] %(message)s")
 log = logging.getLogger(__name__)
 
 
@@ -41,13 +39,15 @@ class FileTool(Tool):
             log.critical(
                 f"CRITICAL: Failed to create artifact folder '{ARTIFACT_FOLDER}': {e}. File tool operations will likely fail."
             )
-            self.base_artifact_path = None # Indicate failure
+            self.base_artifact_path = None  # Indicate failure
 
     def _run_read(self, filename: str) -> Dict[str, Any]:
         """Reads the content from the sanitized filename within the artifact folder."""
         log.info(f"Executing File Read: '{filename}'")
         if not self.base_artifact_path:
-             return {"error": "Base artifact path not configured or could not be created."}
+            return {
+                "error": "Base artifact path not configured or could not be created."
+            }
 
         is_valid, message, full_path, rel_filename = sanitize_and_validate_path(
             filename=filename, base_artifact_path=self.base_artifact_path
@@ -70,9 +70,11 @@ class FileTool(Tool):
                         dir_contents if dir_contents else "(empty directory)"
                     )
                     # Return relative path for listing context
-                    rel_dir_path = os.path.relpath(target_directory, self.base_artifact_path)
+                    rel_dir_path = os.path.relpath(
+                        target_directory, self.base_artifact_path
+                    )
                     # Handle case where target_directory is the base path itself
-                    rel_dir_path = '.' if rel_dir_path == os.curdir else rel_dir_path
+                    rel_dir_path = "." if rel_dir_path == os.curdir else rel_dir_path
                     result_dict["directory_path"] = rel_dir_path
                 else:
                     result_dict["directory_listing_error"] = (
@@ -132,15 +134,21 @@ class FileTool(Tool):
         """Writes content to the sanitized filename, checking for existing files."""
         log.info(f"Executing File Write: '{filename}' (Content length: {len(content)})")
         if not self.base_artifact_path:
-             return {"error": "Base artifact path not configured or could not be created."}
+            return {
+                "error": "Base artifact path not configured or could not be created."
+            }
 
-        if content is None: # Explicitly check for None, empty string is allowed
+        if content is None:  # Explicitly check for None, empty string is allowed
             return {"error": "Missing 'content' parameter for 'write' action."}
 
         # Convert content to string just in case
         if not isinstance(content, str):
-            try: content = str(content)
-            except Exception as e: return {"error": f"Invalid 'content' parameter: could not convert to string. Error: {e}"}
+            try:
+                content = str(content)
+            except Exception as e:
+                return {
+                    "error": f"Invalid 'content' parameter: could not convert to string. Error: {e}"
+                }
 
         is_valid, message, full_path, rel_filename = sanitize_and_validate_path(
             filename=filename, base_artifact_path=self.base_artifact_path
@@ -158,8 +166,12 @@ class FileTool(Tool):
                 log.info(f"Creating directory: {target_directory}")
                 os.makedirs(target_directory, exist_ok=True)
             elif not os.path.isdir(target_directory):
-                log.error(f"Target path's parent exists but is not a directory: {target_directory}")
-                return {"error": f"Cannot write file, parent path '{os.path.dirname(rel_filename)}' is not a directory."}
+                log.error(
+                    f"Target path's parent exists but is not a directory: {target_directory}"
+                )
+                return {
+                    "error": f"Cannot write file, parent path '{os.path.dirname(rel_filename)}' is not a directory."
+                }
 
             if os.path.exists(full_path):
                 error_message = f"File already exists at the specified path: {rel_filename}. Writing aborted to prevent overwrite."
@@ -167,18 +179,26 @@ class FileTool(Tool):
                 list_success, dir_contents = list_directory_contents(target_directory)
                 result_dict = {"error": error_message}
                 if list_success:
-                    result_dict["directory_listing"] = ( dir_contents if dir_contents else "(empty directory)" )
-                    rel_dir_path = os.path.relpath(target_directory, self.base_artifact_path)
-                    rel_dir_path = '.' if rel_dir_path == os.curdir else rel_dir_path
+                    result_dict["directory_listing"] = (
+                        dir_contents if dir_contents else "(empty directory)"
+                    )
+                    rel_dir_path = os.path.relpath(
+                        target_directory, self.base_artifact_path
+                    )
+                    rel_dir_path = "." if rel_dir_path == os.curdir else rel_dir_path
                     result_dict["directory_path"] = rel_dir_path
                 else:
-                    result_dict["directory_listing_error"] = (f"Could not list contents of target directory: {target_directory}")
+                    result_dict["directory_listing_error"] = (
+                        f"Could not list contents of target directory: {target_directory}"
+                    )
                 return result_dict
 
             with open(full_path, "w", encoding="utf-8") as f:
                 f.write(content)
 
-            log.info( f"Successfully wrote {len(content)} characters to artifact: {full_path}" )
+            log.info(
+                f"Successfully wrote {len(content)} characters to artifact: {full_path}"
+            )
 
             return {
                 "status": "success",
@@ -191,8 +211,13 @@ class FileTool(Tool):
             log.error(f"IOError writing artifact '{full_path}': {e}", exc_info=True)
             return {"error": f"File system error writing artifact: {e}"}
         except OSError as e:
-            log.error(f"OSError (e.g., creating directory) for '{full_path}': {e}", exc_info=True)
-            return {"error": f"Operating system error writing artifact or creating directory: {e}"}
+            log.error(
+                f"OSError (e.g., creating directory) for '{full_path}': {e}",
+                exc_info=True,
+            )
+            return {
+                "error": f"Operating system error writing artifact or creating directory: {e}"
+            }
         except Exception as e:
             log.exception(f"Unexpected error writing artifact '{full_path}': {e}")
             return {"error": f"Unexpected error writing artifact: {e}"}
@@ -201,24 +226,30 @@ class FileTool(Tool):
         """Lists files and folders in the specified subdirectory of the artifact folder."""
         log.info(f"Executing File List: Directory='{directory or '(root)'}'")
         if not self.base_artifact_path:
-             return {"error": "Base artifact path not configured or could not be created."}
+            return {
+                "error": "Base artifact path not configured or could not be created."
+            }
 
-        target_dir_rel = directory or "." # Default to root if None or empty
+        target_dir_rel = directory or "."  # Default to root if None or empty
         is_valid, message, full_dir_path, rel_dir_path = sanitize_and_validate_path(
             filename=target_dir_rel, base_artifact_path=self.base_artifact_path
         )
 
         # Special case: if they request '.', full_dir_path will be the base path
         if directory is None or directory == "." or directory == "":
-             full_dir_path = self.base_artifact_path
-             rel_dir_path = "."
-             is_valid = True # Assume base path is always valid if it exists
+            full_dir_path = self.base_artifact_path
+            rel_dir_path = "."
+            is_valid = True  # Assume base path is always valid if it exists
 
         if not is_valid or not full_dir_path:
-            log.error(f"File list failed validation for directory '{directory}': {message}")
+            log.error(
+                f"File list failed validation for directory '{directory}': {message}"
+            )
             return {"error": f"Invalid directory path: {message}"}
 
-        log.info(f"Attempting to list directory: {full_dir_path} (Relative: {rel_dir_path})")
+        log.info(
+            f"Attempting to list directory: {full_dir_path} (Relative: {rel_dir_path})"
+        )
 
         if not os.path.exists(full_dir_path):
             log.error(f"Directory does not exist: {full_dir_path}")
@@ -230,10 +261,20 @@ class FileTool(Tool):
         list_success, contents = list_directory_contents(full_dir_path)
 
         if list_success:
-            log.info(f"Successfully listed directory '{rel_dir_path}'. Found {len(contents)} items.")
+            log.info(
+                f"Successfully listed directory '{rel_dir_path}'. Found {len(contents)} items."
+            )
             # Separate files and directories
-            files = [item for item in contents if os.path.isfile(os.path.join(full_dir_path, item))]
-            dirs = [item for item in contents if os.path.isdir(os.path.join(full_dir_path, item))]
+            files = [
+                item
+                for item in contents
+                if os.path.isfile(os.path.join(full_dir_path, item))
+            ]
+            dirs = [
+                item
+                for item in contents
+                if os.path.isdir(os.path.join(full_dir_path, item))
+            ]
             return {
                 "status": "success",
                 "action": "list",
@@ -246,38 +287,51 @@ class FileTool(Tool):
             log.error(f"Failed to list directory contents for: {full_dir_path}")
             return {"error": f"Failed to list contents of directory '{rel_dir_path}'."}
 
-
     def run(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """Runs file read, write, or list based on parameters."""
         if not self.base_artifact_path:
-             return {"error": "FileTool cannot operate: Base artifact path is not configured or could not be created."}
+            return {
+                "error": "FileTool cannot operate: Base artifact path is not configured or could not be created."
+            }
 
         if not isinstance(parameters, dict):
             log.error(f"Invalid params type: {type(parameters)}")
-            return {"error": "Invalid parameters format. Expected a JSON object (dict) with an 'action' key."}
+            return {
+                "error": "Invalid parameters format. Expected a JSON object (dict) with an 'action' key."
+            }
 
         action = parameters.get("action")
 
         if action == "read":
             filename = parameters.get("filename")
             if not filename or not isinstance(filename, str) or not filename.strip():
-                return {"error": "Missing or invalid 'filename' parameter for 'read' action."}
+                return {
+                    "error": "Missing or invalid 'filename' parameter for 'read' action."
+                }
             return self._run_read(filename)
 
         elif action == "write":
             filename = parameters.get("filename")
-            content = parameters.get("content") # Content presence checked in _run_write
+            content = parameters.get(
+                "content"
+            )  # Content presence checked in _run_write
             if not filename or not isinstance(filename, str) or not filename.strip():
-                return {"error": "Missing or invalid 'filename' parameter for 'write' action."}
+                return {
+                    "error": "Missing or invalid 'filename' parameter for 'write' action."
+                }
             # Content can be empty string, validation inside _run_write
             return self._run_write(filename, content if content is not None else "")
 
         elif action == "list":
-            directory = parameters.get("directory") # Optional
+            directory = parameters.get("directory")  # Optional
             if directory is not None and not isinstance(directory, str):
-                return {"error": "Invalid 'directory' parameter for 'list' action (must be a string or omitted)."}
+                return {
+                    "error": "Invalid 'directory' parameter for 'list' action (must be a string or omitted)."
+                }
             return self._run_list(directory)
 
         else:
             log.error(f"Invalid action specified for file tool: '{action}'")
-            return {"error": "Invalid 'action' specified. Must be 'read', 'write', or 'list'."}
+            return {
+                "error": "Invalid 'action' specified. Must be 'read', 'write', or 'list'."
+            }
