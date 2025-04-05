@@ -313,43 +313,77 @@ class AutonomousAgent:
         except Exception as e:
             log.error(f"Error saving session state to '{self.session_state_path}': {e}")
 
+    # --- MODIFIED: Reduced lock scope ---
     def handle_user_suggestion_move_on(self) -> str:
         feedback = "Suggestion ignored: Agent not initialized."
-        current_task_id = self.session_state.get("current_task_id")
-        with self._state_lock:
-            if self._is_running.is_set():
-                if current_task_id:
-                    task = self.task_queue.get_task(current_task_id)
-                    if task and task.status in ["planning", "in_progress"]:
-                        log.info(
-                            f"User suggested moving on from task {current_task_id}. Setting flag."
-                        )
-                        self.session_state["user_suggestion_move_on_pending"] = True
+        current_task_id = self.session_state.get("current_task_id") # Read outside lock is fine for initial check
+        agent_running = self._is_running.is_set() # Read outside lock is fine for initial check
+        flag_set_successfully = False # Track if we actually set the flag
+
+        if agent_running:
+            if current_task_id:
+                task = self.task_queue.get_task(current_task_id)
+                if task and task.status in ["planning", "in_progress"]:
+                    with self._state_lock: # Minimal lock scope
+                        # Re-check running status inside lock in case it changed
+                        if self._is_running.is_set():
+                             # Setting the flag is the main action here
+                             log.info(
+                                f"User suggested moving on from task {current_task_id}. Setting flag."
+                             )
+                             self.session_state["user_suggestion_move_on_pending"] = True
+                             flag_set_successfully = True
+                             # Minimal action inside lock: just set the flag
+                        else:
+                            # Agent was paused between initial check and acquiring lock
+                            log.info(
+                                f"Agent paused just before setting move_on flag for task {current_task_id}. Ignoring suggestion."
+                            )
+                            feedback = f"Suggestion ignored: Agent paused just before flag could be set. (Task: {current_task_id})."
+
+                    # --- Operations outside the lock ---
+                    if flag_set_successfully:
                         feedback = f"Suggestion noted for current task ({current_task_id}). Agent will consider wrapping up."
-                        self.save_session_state()
-                        self.memory.add_memory(
-                            f"User Suggestion: Consider moving on from task {current_task_id}.",
-                            {
-                                "type": "user_suggestion_move_on",
-                                "task_id": current_task_id,
-                            },
-                        )
-                    else:
-                        log.info(
-                            f"User suggested moving on, but task {current_task_id} is not active ({task.status if task else 'Not Found'})."
-                        )
-                        feedback = f"Suggestion ignored: Task {current_task_id} is not currently being planned or executed (Status: {task.status if task else 'Not Found'})."
-                else:
-                    log.info("User suggested task change, but agent is idle.")
-                    feedback = (
-                        "Suggestion ignored: Agent is currently idle (no active task)."
+                        # Save state and add memory *after* releasing the lock
+                        try:
+                            self.save_session_state() # This function acquires the lock internally again, but should be brief
+                        except Exception as e:
+                             log.error(f"Error saving session state after setting move_on flag: {e}")
+                             # Continue anyway, flag is set in memory at least
+
+                        # Add memory only if agent is still running after potentially saving state
+                        if self._is_running.is_set():
+                            try:
+                                self.memory.add_memory(
+                                    f"User Suggestion: Consider moving on from task {current_task_id}.",
+                                    {
+                                        "type": "user_suggestion_move_on",
+                                        "task_id": current_task_id,
+                                    },
+                                )
+                            except Exception as e:
+                                 log.error(f"Error adding move_on suggestion memory after setting flag: {e}")
+                        else:
+                            log.info("Agent paused after setting move_on flag, skipping memory add.")
+
+                else: # Task not found or not in correct status
+                    log.info(
+                        f"User suggested moving on, but task {current_task_id} is not active ({task.status if task else 'Not Found'})."
                     )
-            else:
-                log.info(
-                    f"Agent paused, ignoring suggestion to move on from task {current_task_id or 'N/A'} (flag not set)."
+                    feedback = f"Suggestion ignored: Task {current_task_id} is not currently being planned or executed (Status: {task.status if task else 'Not Found'})."
+            else: # No current task
+                log.info("User suggested task change, but agent is idle.")
+                feedback = (
+                    "Suggestion ignored: Agent is currently idle (no active task)."
                 )
-                feedback = f"Suggestion noted, but agent is paused. Flag not set. (Task: {current_task_id or 'N/A'})."
+        else: # Agent not running initially
+            log.info(
+                f"Agent paused, ignoring suggestion to move on from task {current_task_id or 'N/A'} (flag not set)."
+            )
+            feedback = f"Suggestion noted, but agent is paused. Flag not set. (Task: {current_task_id or 'N/A'})."
+
         return feedback
+    # --- END MODIFICATION ---
 
     def create_task(
         self,
@@ -1488,8 +1522,13 @@ class AutonomousAgent:
                 log.info(
                     f"User suggestion 'move on' is pending for task {task.id}, step {step_num_display}."
                 )
+                # --- RESET FLAG HERE ---
+                # Reset the flag *before* generating thinking, so the prompt reflects it,
+                # but the flag won't persist if thinking/action fails and needs retry.
                 with self._state_lock:
                     self.session_state["user_suggestion_move_on_pending"] = False
+                self.save_session_state() # Save the reset flag state immediately
+                # --- END FLAG RESET ---
 
             step_log.append(
                 f"--- Task '{task.id}' | Step {step_num_display}/{total_steps} (Step Retry {current_retries}/{config.AGENT_MAX_STEP_RETRIES}, Task Attempt {task.reattempt_count + 1}/{config.TASK_MAX_REATTEMPT}) ---"
@@ -1506,7 +1545,7 @@ class AutonomousAgent:
             raw_thinking, action = self.generate_thinking(
                 task=task,
                 tool_results=self._ui_update_state.get('last_tool_results'),
-                user_suggested_move_on=user_suggested_move_on,
+                user_suggested_move_on=user_suggested_move_on, # Pass the flag value from start of step
             )
             action_type = action.get("type", "error") # Update action_type here
             action_message = action.get("message", "Unknown error")
@@ -1913,8 +1952,7 @@ class AutonomousAgent:
                 log.error(f"Could not retrieve final task object for {task.id}.")
             self.session_state["current_task_id"] = None
             self.session_state["current_task_retries"] = 0
-            with self._state_lock:
-                self.session_state["user_suggestion_move_on_pending"] = False
+            # User suggestion flag was already reset at the start of the step or if agent was paused
         elif step_status == "error_reattempting_task":
             # Task ID remains, step retries reset earlier by _reflect...
             pass
@@ -2004,6 +2042,7 @@ class AutonomousAgent:
                     task = None
                     self.session_state["current_task_id"] = None
                     self.session_state["current_task_retries"] = 0
+                    # Reset suggestion flag when task context is cleared
                     with self._state_lock:
                          self.session_state["user_suggestion_move_on_pending"] = False
                     self._update_ui_state(**default_state)
@@ -2049,6 +2088,7 @@ class AutonomousAgent:
                      task.cumulative_findings = ""
 
                 self.session_state["current_task_retries"] = 0 # Reset STEP retries for new task/attempt
+                # Ensure suggestion flag is clear when starting a new task
                 with self._state_lock:
                      self.session_state["user_suggestion_move_on_pending"] = False
                 self.save_session_state()
@@ -2129,6 +2169,8 @@ class AutonomousAgent:
 
                     self.session_state["current_task_id"] = None
                     self.session_state["current_task_retries"] = 0
+                    with self._state_lock: # Ensure flag is clear on failure
+                         self.session_state["user_suggestion_move_on_pending"] = False
                     self.save_session_state()
                     state_to_update = default_state.copy()
                     state_to_update["log"] = "\n".join(step_result_log)
@@ -2148,7 +2190,7 @@ class AutonomousAgent:
                 step_result_log.append(f"Task {task.id} state unexpected: {task.status}. Resetting session.")
                 self.session_state["current_task_id"] = None
                 self.session_state["current_task_retries"] = 0
-                with self._state_lock:
+                with self._state_lock: # Clear flag on unexpected reset
                     self.session_state["user_suggestion_move_on_pending"] = False
                 self.save_session_state()
                 state_to_update = default_state.copy()
@@ -2181,7 +2223,7 @@ class AutonomousAgent:
                 # Clear session state regardless
                 self.session_state["current_task_id"] = None
                 self.session_state["current_task_retries"] = 0
-                with self._state_lock:
+                with self._state_lock: # Clear flag on critical error
                     self.session_state["user_suggestion_move_on_pending"] = False
                 self.save_session_state()
 

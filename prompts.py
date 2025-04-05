@@ -46,7 +46,9 @@ Analyze "Input Task Description" and devise a step-by-step plan to achieve it. T
 *  **File Organization:** **Organize related files into subdirectories by project and content category** within the workspace (e.g., `proj_xxx/research_summaries/topic.txt`, `proj_xxx/code_output/script_results.log`, `proj_xxx/stories/chapter1.md`). Do not put everything in the root directory. Use the `file` tool with paths like `project_name/content_category/filename.ext`.
 *  **Conciseness:** Keep step descriptions brief but clear.
 *  **Completeness:** Ensure the plan covers the necessary actions to reasonably address the Overall Task. Include a final step for summarizing findings or producing the required output if applicable.
-*  **Step Limit:** Generate **no more than {max_steps}** steps. Combine minor actions if necessary to stay within the limit. Always try to perform the task with the fewest steps necessary.
+*  **Step Limit:** Generate **no more than {max_steps}** steps.
+  * Please combine minor actions if necessary to stay within the limit.
+  * Try to perform the task with the fewest steps necessary. If the task can be completed in 1 single step, please provide only 1 step.
 *  **Focus:** Base the plan *only* on the Overall Task description, available tools, and any provided lessons learned. Do not assume external knowledge unless implied by the task.
 *  **Error Avoidance (if applicable):** If lessons learned are provided, actively try to design steps that mitigate or work around the previously encountered errors.
 

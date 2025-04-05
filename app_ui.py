@@ -26,58 +26,161 @@ import chromadb
 # --- Logging Setup ---
 import logging
 
-# --- NEW: Console Log Capture Setup ---
-# Global buffer to hold the last N characters of console output
+# --- NEW: Console Log Capture and File Logging Setup ---
+# Global buffer to hold the last N characters of console output for UI
 console_log_buffer: deque = deque(maxlen=config.UI_LOG_MAX_LENGTH)
 
 
 class ConsoleLogHandler(io.StringIO):
-    """A custom stream handler that writes to a deque."""
+    """
+    A custom stream handler that writes to:
+    1. A deque buffer (for the Gradio UI).
+    2. A file handler (for persistent file logs).
+    This captures both `print()` and logging output when sys.stdout/stderr are redirected.
+    """
 
-    def __init__(self, buffer: deque):
+    def __init__(self, buffer: deque, file_handler: Optional[logging.FileHandler] = None):
         super().__init__()
         self.buffer = buffer
+        self.file_handler = file_handler
+        self.original_stdout = sys.__stdout__ # Keep reference for potential fallback
 
     def write(self, msg):
-        # Append characters to the deque. Deque handles maxlen automatically.
-        for char in msg:
-            self.buffer.append(char)
-        # Optional: If you still want the original behavior (e.g., writing to actual console)
-        # sys.__stdout__.write(msg)
+        # 1. Append characters to the deque (for UI).
+        # Check if buffer has space or maxlen is > 0 to avoid infinite growth if maxlen=None
+        if self.buffer.maxlen is None or len(self.buffer) < self.buffer.maxlen:
+            for char in msg:
+                self.buffer.append(char)
+        elif self.buffer.maxlen > 0: # Only trim if maxlen is set and positive
+            # Efficiently add new chars and discard old ones
+            num_to_add = len(msg)
+            if num_to_add >= self.buffer.maxlen:
+                 # If new message >= maxlen, just replace the whole buffer
+                 self.buffer.clear()
+                 self.buffer.extend(msg[-self.buffer.maxlen:])
+            else:
+                 # Add new chars, deque automatically handles removal from the left
+                 self.buffer.extend(msg)
+
+
+        # 2. Write to the file handler's stream (for file log).
+        if self.file_handler and self.file_handler.stream:
+            try:
+                # self.file_handler.stream.write(msg)  # buffer will write automatically, no need to explicitly write
+                self.file_handler.stream.flush()  # Ensure it gets written promptly
+            except Exception as e:
+                # Avoid crashing the app. Write error to original stderr.
+                # Use sys.__stderr__ to bypass potential redirection loops.
+                sys.__stderr__.write(f"\n--- CONSOLE LOG HANDLER FILE WRITE ERROR ---\n")
+                sys.__stderr__.write(f"Error writing message to log file: {e}\n")
+                sys.__stderr__.write(f"Original Message Snippet: {msg[:100]}...\n")
+                sys.__stderr__.write(f"--- END ERROR ---\n")
+
 
     def flush(self):
-        # Optional: Implement if needed, e.g., for compatibility
-        pass
+        # Flush the file stream if it exists
+        if self.file_handler and self.file_handler.stream:
+            try:
+                self.file_handler.stream.flush()
+            except Exception as e:
+                 sys.__stderr__.write(f"Error flushing file handler stream: {e}\n")
 
-
-# Setup logging *before* redirection if you want setup messages on the console
+# Initialize logger *before* redirection if needed for setup messages
+# Note: basicConfig might add a default StreamHandler we'll need to remove later
 logging.basicConfig(
-    level=config.LOG_LEVEL,
+    level=config.LOG_LEVEL, # Set level early
     format="[%(asctime)s] [%(levelname)s][%(name)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
-    # handlers=[logging.StreamHandler(sys.__stdout__)] # Optionally log basicConfig to original stdout
 )
 log = logging.getLogger("AppUI")
 
-# --- End Console Log Capture Setup ---
-
-
-# --- Global Variables / Setup ---
+# --- Global Variables / Setup (Agent etc.) ---
 agent_instance: Optional[AutonomousAgent] = None
+# File handler needs to be global or accessible where needed if ConsoleLogHandler is global
+file_log_handler: Optional[logging.FileHandler] = None
+
 try:
+    # --- Setup File Logging ---
+    log_filename = f"agent_run_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    log_filepath = os.path.join(config.LOG_FOLDER, log_filename)
+    log_formatter = logging.Formatter(
+        "[%(asctime)s] [%(levelname)s][%(name)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    file_log_handler = logging.FileHandler(log_filepath, encoding='utf-8')
+    file_log_handler.setFormatter(log_formatter)
+    file_log_handler.setLevel(config.LOG_LEVEL)
+
+    # Get the root logger and add the file handler
+    root_logger = logging.getLogger()
+    root_logger.addHandler(file_log_handler)
+    root_logger.setLevel(config.LOG_LEVEL) # Ensure root level is appropriate
+
+    # --- Redirect stdout/stderr ---
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    # Pass the file handler to the ConsoleLogHandler
+    log_stream_handler = ConsoleLogHandler(console_log_buffer, file_handler=file_log_handler)
+
+    # Redirect stdout and stderr *after* file handler is created
+    sys.stdout = log_stream_handler
+    sys.stderr = log_stream_handler
+
+    # Configure the root logger to *also* send output to our UI handler (log_stream_handler)
+    # Remove existing StreamHandlers pointing to original stdout/stderr to avoid double console printing
+    # if basicConfig added one earlier.
+    for handler in list(root_logger.handlers): # Iterate over a copy
+        should_remove = False
+        if isinstance(handler, logging.StreamHandler):
+             # Check if the stream is one of the original std streams or the file handler we just added
+             if handler.stream in [original_stdout, original_stderr, sys.__stdout__, sys.__stderr__]:
+                 should_remove = True
+             # Prevent removing the file handler itself if basicConfig somehow added it directly
+             if handler is file_log_handler:
+                 should_remove = False
+
+        if should_remove:
+            log.debug(f"Removing default StreamHandler: {handler}")
+            root_logger.removeHandler(handler)
+
+
+    # Add a handler that writes logging records to the log_stream_handler (for UI deque)
+    # Note: ConsoleLogHandler already writes to the file directly for print statements,
+    # but logging records need to be processed by the logging system first.
+    ui_log_stream_handler = logging.StreamHandler(log_stream_handler)
+    ui_log_stream_handler.setFormatter(log_formatter)
+    ui_log_stream_handler.setLevel(config.LOG_LEVEL)
+    root_logger.addHandler(ui_log_stream_handler)
+
+    print(f"--- Autonomous Agent App Start --- (Logging to: {log_filepath})") # Test print redirection
+    log.info(f"Console output redirected to UI buffer and log file: {log_filepath}")
+    # --- End Logging/Redirection Setup ---
+
+
+    # --- Initialize Agent Components ---
     mem_collection = setup_chromadb()
     if mem_collection is None:
         raise RuntimeError("Memory Database setup failed.")
     # Document archive DB setup happens within the WebTool now
     agent_instance = AutonomousAgent(memory_collection=mem_collection)
-    log.info("App components initialized successfully.")
+    log.info("Agent components initialized successfully.")
+
 except Exception as e:
-    log.critical(f"Fatal error during App component initialization: {e}", exc_info=True)
-    print(  # Use print here as logging might be redirected later
-        f"\n\nFATAL ERROR: Could not initialize agent components: {e}\n",
-        file=sys.stderr,
-    )
+    # If init fails, log critical error to file (if handler exists) and original stderr
+    log_message = f"Fatal error during App component initialization: {e}\n{traceback.format_exc()}"
+    if file_log_handler and file_log_handler.stream:
+        try:
+            file_log_handler.stream.write(f"\n--- FATAL INIT ERROR ---\n{log_message}\n--- END ERROR ---\n")
+            file_log_handler.stream.flush()
+        except:
+            pass # Ignore errors writing the error message
+    # Restore stderr to print the crucial error message to the actual console
+    sys.stderr = original_stderr
+    print(f"\n\nFATAL ERROR: Could not initialize agent components: {e}\n", file=sys.stderr)
+    print(f"Check log file in {config.LOG_FOLDER} for details.\n", file=sys.stderr)
+    sys.stderr = log_stream_handler # Re-redirect if handler exists
     agent_instance = None
+
 
 initial_status_text = "Error: Agent not initialized."
 initial_thinking_text = "(Agent Initializing...)"
@@ -87,7 +190,7 @@ initial_step_history_data: List[Dict] = []
 initial_step_desc_text = "(Agent Initializing - Step)"
 initial_plan_text = "(Agent Initializing - Plan)"
 initial_task_status_text = "(Agent Initializing - Task Status)"
-initial_console_log_text = "(Console Log Initializing...)"  # <<< NEW initial value
+initial_console_log_text = "(Console Log Initializing...)"
 
 if agent_instance:
     log.info("Setting initial agent state to paused for UI...")
@@ -103,21 +206,19 @@ if agent_instance:
     initial_step_desc_text = initial_state.get("current_step_desc", "N/A")
     initial_plan_text = initial_state.get("current_plan", "(None)")
     initial_task_status_text = f"ID: {initial_state.get('current_task_id', 'None')} ({task_status})\n\nDescription: {initial_state.get('current_task_desc', 'N/A')}"
-    # Don't read console buffer here, it might not be fully populated yet
-    initial_console_log_text = "".join(console_log_buffer) or initial_console_log_text
+    # Read initial log content from the buffer
+    initial_console_log_text = "".join(console_log_buffer) or "(Console Log Empty)"
 
     log.info(f"Calculated initial status text for UI: {initial_status_text}")
 
 
 # --- Global variable to store the last known Monitor UI state ---
-# Updated tuple size to 10
 last_monitor_state: Optional[
     Tuple[str, str, str, str, str, str, str, str, str, str]
 ] = None
 
 # --- Formatting Functions ---
-
-
+# ... (format_memories_for_display, format_web_search_results, etc. unchanged) ...
 def format_memories_for_display(
     memories: List[Dict[str, Any]], context_label: str
 ) -> str:
@@ -157,10 +258,6 @@ def format_memories_for_display(
 
     return "\n".join(output_parts)
 
-
-# --- Tool Result Formatting Functions ---
-
-
 def format_web_search_results(results_data: Optional[Dict[str, Any]]) -> str:
     """Formats web search results for display."""
     # Use 'result' key which now contains the actual tool output
@@ -186,7 +283,6 @@ def format_web_search_results(results_data: Optional[Dict[str, Any]]) -> str:
         output.append(f"   > {snippet}\n")
     return "\n".join(output)
 
-
 def format_memory_search_results(results_data: Optional[Dict[str, Any]]) -> str:
     """Formats memory search results for display."""
     # Use 'result' key
@@ -211,7 +307,6 @@ def format_memory_search_results(results_data: Optional[Dict[str, Any]]) -> str:
         output.append(f"**Rank {rank} ({rel_time})** - Type: {mem_type}, Dist: {dist}")
         output.append(f"   > {snippet}\n")
     return "\n".join(output)
-
 
 def format_web_browse_results(results_data: Optional[Dict[str, Any]]) -> str:
     """Formats standard web browse results (full page, potentially truncated)."""
@@ -249,7 +344,6 @@ def format_web_browse_results(results_data: Optional[Dict[str, Any]]) -> str:
         "```text\n" + (content if content else "(No content extracted)") + "\n```"
     )
     return "\n".join(output)
-
 
 def format_web_browse_query_results(results_data: Optional[Dict[str, Any]]) -> str:
     """Formats focused web browse results (retrieved snippets)."""
@@ -304,7 +398,6 @@ def format_web_browse_query_results(results_data: Optional[Dict[str, Any]]) -> s
         output.append(details_block)
 
     return "\n".join(output)
-
 
 def format_other_tool_results(results_data: Optional[Dict[str, Any]]) -> str:
     """Formats results from other tools (like file, status) or errors as JSON/Text."""
@@ -384,8 +477,8 @@ def format_other_tool_results(results_data: Optional[Dict[str, Any]]) -> str:
 
     return "\n".join(output)
 
-
 # --- Functions for Monitor Tab ---
+# ... (start_agent_processing, pause_agent_processing, suggest_task_change unchanged) ...
 def start_agent_processing():
     if agent_instance:
         log.info("UI: Start/Resume Agent")
@@ -395,7 +488,6 @@ def start_agent_processing():
     else:
         log.error("UI failed: Agent not initialized.")
         return "ERROR: Agent not initialized."
-
 
 def pause_agent_processing():
     if agent_instance:
@@ -408,7 +500,6 @@ def pause_agent_processing():
         log.error("UI failed: Agent not initialized.")
         return "ERROR: Agent not initialized."
 
-
 def suggest_task_change():
     feedback = "Suggestion ignored: Agent not initialized."
     if agent_instance:
@@ -419,17 +510,16 @@ def suggest_task_change():
         log.error("UI suggest_task_change failed: Agent not initialized.")
     return feedback
 
-
-# --- MODIFIED: Update function for Monitor Tab ---
+# --- update_monitor_ui (modified only to read from buffer directly) ---
 def update_monitor_ui() -> Tuple[str, str, str, str, str, str, str, str, str, str]:
     """Fetches the latest agent UI state and console log for display."""
-    # Initialize with error/default values (10 fields now)
+    # Initialize with error/default values
     current_task_display = "(Error)"
     current_step_display = "(Error)"
     current_plan_display = "(Error)"
     dependent_tasks_display = "Dependent Tasks: (Error)"
     thinking_display = "(Error)"
-    # <<< MODIFIED >>> Use global buffer for console log
+    # <<< Get latest from buffer >>>
     console_log_output = "".join(console_log_buffer) or "(Console Log Empty)"
     memory_display = "(Error)"
     tool_results_display = "(Error)"
@@ -440,20 +530,16 @@ def update_monitor_ui() -> Tuple[str, str, str, str, str, str, str, str, str, st
         status_bar_text = "Error: Agent not initialized."
         current_task_display = "Not Initialized"
         current_step_display = "Not Initialized"
-        current_plan_display = "Not Initialized"
-        dependent_tasks_display = "Dependent Tasks: (Not Initialized)"
-        thinking_display = "Not Initialized"
-        console_log_output = "Agent Not Initialized"  # <<< MODIFIED >>>
-        memory_display = "Not Initialized"
-        tool_results_display = "Not Initialized"
-        final_answer_display = "Not Initialized"
+        # ... other error fields ...
+        console_log_output = "Agent Not Initialized" # Update log field too
+        # ...
         return (
             current_task_display,
             current_step_display,
             current_plan_display,
             dependent_tasks_display,
             thinking_display,
-            console_log_output,  # <<< MODIFIED >>> Return console log
+            console_log_output, # <<< Return latest buffer content >>>
             memory_display,
             tool_results_display,
             status_bar_text,
@@ -488,8 +574,6 @@ def update_monitor_ui() -> Tuple[str, str, str, str, str, str, str, str, str, st
 
         # Thinking Process
         thinking_display = ui_state.get("thinking", "(No thinking recorded)")
-
-        # Step Log Output is now handled by the console buffer
 
         # Recent Memories
         recent_memories = ui_state.get("recent_memories", [])
@@ -549,8 +633,10 @@ def update_monitor_ui() -> Tuple[str, str, str, str, str, str, str, str, str, st
     except Exception as e:
         log.exception("Error in update_monitor_ui")
         error_msg = f"ERROR updating UI:\n{traceback.format_exc()}"
-        console_log_output = error_msg  # <<< MODIFIED >>> Show error in console log box
+        # <<< Update log field with error >>>
+        console_log_output = error_msg
         status_bar_text = "Error"
+        # ... set other fields to Error ...
         current_task_display = "Error"
         current_step_display = "Error"
         current_plan_display = "Error"
@@ -560,14 +646,14 @@ def update_monitor_ui() -> Tuple[str, str, str, str, str, str, str, str, str, st
         tool_results_display = "Error"
         final_answer_display = "Error"
 
-    # <<< MODIFIED >>> Return console_log_output instead of step_log_output
+    # <<< Return latest buffer content >>>
     return (
         current_task_display,
         current_step_display,
         current_plan_display,
         dependent_tasks_display,
         thinking_display,
-        console_log_output,  # Return the current console log buffer content
+        console_log_output,
         memory_display,
         tool_results_display,
         status_bar_text,
@@ -576,6 +662,7 @@ def update_monitor_ui() -> Tuple[str, str, str, str, str, str, str, str, str, st
 
 
 # --- Functions for Step History Navigation ---
+# ... (format_step_details_for_display, view_step_relative, view_latest_step unchanged) ...
 def format_step_details_for_display(
     step_data: Optional[Dict],
 ) -> Tuple[str, str, str, str, str]:
@@ -615,7 +702,6 @@ def format_step_details_for_display(
     # Return title, objective, thinking, log, result summary
     return title, objective, thinking, log_snippet, results_display
 
-
 def view_step_relative(
     current_index_str: str, step_delta: int, history_data: List[Dict]
 ) -> Tuple[str, str, str, str, str, str]:
@@ -639,7 +725,6 @@ def view_step_relative(
 
     return str(new_index), title, objective, thinking, log_s, result_s
 
-
 def view_latest_step(
     history_data: List[Dict],
 ) -> Tuple[str, str, str, str, str, str]:
@@ -657,8 +742,8 @@ def view_latest_step(
 
     return str(latest_index), title, objective, thinking, log_s, result_s
 
-
 # --- Functions for Chat Tab ---
+# ... (_should_generate_task, prioritize_generated_task, create_priority_task, chat_response unchanged) ...
 def _should_generate_task(user_msg: str, assistant_response: str) -> bool:
     if not agent_instance:
         return False
@@ -671,7 +756,6 @@ def _should_generate_task(user_msg: str, assistant_response: str) -> bool:
     decision = response and "yes" in response.strip().lower()
     log.info(f"Task eval: {'YES' if decision else 'NO'} (LLM: '{response}')")
     return decision
-
 
 def prioritize_generated_task(last_generated_task_id: Optional[str]):
     feedback = "Prioritization failed: Agent not initialized."
@@ -694,8 +778,6 @@ def prioritize_generated_task(last_generated_task_id: Optional[str]):
             feedback = "⚠️ Prioritization failed: No task ID provided (was a task generated this session?)."
     return feedback
 
-
-# --- NEW: Function to create a priority task ---
 def create_priority_task(message_text: str):
     """Adds the message text as a new task with priority 1."""
     feedback = "Create Task failed: Agent not initialized."
@@ -717,9 +799,6 @@ def create_priority_task(message_text: str):
         log.error("UI create_priority_task failed: Agent not initialized.")
     return feedback
 
-# --- REMOVED: inject_chat_info function ---
-
-# --- MODIFIED: chat_response (remains mostly the same logic, calls _should_generate_task etc) ---
 def chat_response(
     message: str, history: List[Dict[str, str]]
 ) -> Tuple[List[Dict[str, str]], str, str, str, Optional[str]]:
@@ -905,9 +984,8 @@ def chat_response(
             None,
         )
 
-
 # --- Functions for Agent State Tab ---
-# --- MODIFIED: refresh_agent_state_display ---
+# ... (refresh_agent_state_display, update_task_memory_display, update_general_memory_display, show_task_details unchanged) ...
 def refresh_agent_state_display():
     log.info("State Tab: Refresh button clicked. Fetching latest state...")
     if not agent_instance:
@@ -999,8 +1077,6 @@ def refresh_agent_state_display():
             f"Error loading state details: {e}",
         )
 
-
-# --- MODIFIED: update_task_memory_display (No change needed) ---
 def update_task_memory_display(selected_task_id: str):
     log.debug(f"State Tab: Task ID selected: {selected_task_id}")
     columns = ["Relative Time", "Timestamp", "Type", "Content Snippet", "ID"]
@@ -1023,8 +1099,6 @@ def update_task_memory_display(selected_task_id: str):
         log.exception(f"Error fetching memories for task {selected_task_id}")
         return pd.DataFrame([{"Error": str(e)}])
 
-
-# --- MODIFIED: update_general_memory_display (No change needed) ---
 def update_general_memory_display():
     log.debug("State Tab: Refreshing general memories display data...")
     columns = ["Relative Time", "Timestamp", "Type", "Content Snippet", "ID"]
@@ -1046,8 +1120,6 @@ def update_general_memory_display():
         log.exception("Error fetching general memories")
         return pd.DataFrame([{"Error": str(e)}])
 
-
-# --- NEW: Handler for DataFrame row selection ---
 def show_task_details(evt: gr.SelectData, task_list: list) -> str:
     """Formats the details of a selected task row for display."""
     if not task_list or not isinstance(task_list, list):
@@ -1080,7 +1152,6 @@ def show_task_details(evt: gr.SelectData, task_list: list) -> str:
     except Exception as e:
         log.exception(f"Error formatting task details: {e}")
         return f"(Error displaying task details: {e})"
-
 
 # --- Gradio UI Definition ---
 log.info("Defining Gradio UI...")
@@ -1242,113 +1313,47 @@ else:
                 # --- Timer Setup ---
                 timer = gr.Timer(config.UI_UPDATE_INTERVAL)
 
-                # --- MODIFIED: Timer Update Function Wrapper ---
+                # --- Timer Update Function Wrapper ---
                 def update_monitor_and_history():
-                    """Handles periodic UI updates for the Monitor tab, including the console log."""
+                    """Handles periodic UI updates for the Monitor tab, including the console log buffer."""
                     global last_monitor_state
-                    num_monitor_outputs = 10  # Keep 10 outputs
-                    # Initialize with placeholder values matching the 10 outputs
-                    monitor_updates_to_return = (
-                        "(Initializing)",
-                    ) * num_monitor_outputs
-                    current_history_data = []
+                    num_monitor_outputs = 10 # Expected number of monitor outputs
 
-                    # <<< NEW: Get current console log content >>>
-                    current_console_log = "".join(console_log_buffer)
+                    try:
+                        # Get fresh monitor state (which includes reading the log buffer)
+                        current_monitor_state_tuple = update_monitor_ui()
 
-                    if agent_instance:
-                        try:
+                        # Validate tuple structure just in case
+                        if (
+                            not isinstance(current_monitor_state_tuple, tuple)
+                            or len(current_monitor_state_tuple) != num_monitor_outputs
+                        ):
+                            log.error(
+                                f"Monitor update tuple structure mismatch. Expected {num_monitor_outputs}. Got {len(current_monitor_state_tuple) if isinstance(current_monitor_state_tuple, tuple) else type(current_monitor_state_tuple)}"
+                            )
+                            raise ValueError("Monitor UI state tuple structure mismatch.")
+
+                        last_monitor_state = current_monitor_state_tuple # Cache the latest state
+
+                        # Get history data (assuming agent_instance exists if update_monitor_ui didn't fail hard)
+                        current_history_data = []
+                        if agent_instance:
                             agent_ui_state = agent_instance.get_ui_update_state()
-                            current_history_data = agent_ui_state.get(
-                                "step_history", []
-                            )
+                            current_history_data = agent_ui_state.get("step_history", [])
 
-                            # Always get fresh monitor state if agent running or no previous state
-                            if (
-                                agent_instance._is_running.is_set()
-                                or last_monitor_state is None
-                            ):
-                                log.debug(
-                                    "Agent running or first update, getting fresh monitor state..."
-                                )
-                                current_monitor_state_tuple = update_monitor_ui()
-                            else:
-                                # Agent paused/stopped, use cached state but update status bar and log
-                                log.debug(
-                                    "Agent paused/stopped, using cached monitor state + live console log."
-                                )
-                                # Use cached tuple IF it exists and has the right size
-                                if last_monitor_state is not None and len(last_monitor_state) == num_monitor_outputs:
-                                    current_monitor_state_tuple = last_monitor_state
-                                else:
-                                    log.warning("Cached monitor state missing or invalid size, fetching fresh.")
-                                    current_monitor_state_tuple = update_monitor_ui() # Fallback
-
-                            # Ensure the tuple has the correct number of elements *before* modifying
-                            if (
-                                len(current_monitor_state_tuple)
-                                != num_monitor_outputs
-                            ):
-                                raise ValueError(
-                                    f"Monitor update state tuple returned {len(current_monitor_state_tuple)} elements, expected {num_monitor_outputs}"
-                                )
-
-                            last_monitor_state = current_monitor_state_tuple # Cache the latest state
-
-                            # Now modify the tuple *if* paused
-                            if not agent_instance._is_running.is_set():
-                                temp_list = list(last_monitor_state)
-                                # Index 8 is status_bar_text (0-based)
-                                temp_list[8] = (
-                                    f"Agent Status: {agent_ui_state.get('status','paused')} @ {agent_ui_state.get('timestamp', 'N/A')}"
-                                )
-                                # Index 5 is console_log_output (0-based)
-                                temp_list[5] = (
-                                    current_console_log
-                                    or "(Console Log Empty - Paused)"
-                                )
-                                monitor_updates_to_return = tuple(temp_list)
-                            else:
-                                # If running, use the state as is (log should be correct from update_monitor_ui)
-                                monitor_updates_to_return = last_monitor_state
-
-
-                        except Exception as e:
-                            log.exception("Error during monitor update wrapper")
-                            # Construct error tuple matching expected output size
-                            error_tuple = list(["Error: Update Failed"] * num_monitor_outputs)
-                            error_tuple[5] = (
-                                f"ERROR updating UI:\n{traceback.format_exc()}"  # Put error in console log
-                            )
-                            monitor_updates_to_return = tuple(error_tuple)
-                            current_history_data = [{"error": f"Update failed: {e}"}]
-                    else:
-                        # Construct offline tuple matching expected output size
-                        offline_tuple = list(["Error: Agent Offline"] * num_monitor_outputs)
-                        offline_tuple[5] = "Agent Offline"  # Put status in console log
-                        monitor_updates_to_return = tuple(offline_tuple)
-                        current_history_data = [{"error": "Agent Offline"}]
-
-                    # Validate final tuple structure before returning
-                    if (
-                        not isinstance(monitor_updates_to_return, tuple)
-                        or len(monitor_updates_to_return) != num_monitor_outputs
-                    ):
-                        log.error(
-                            f"Monitor update tuple structure mismatch. Expected {num_monitor_outputs}. Got {len(monitor_updates_to_return) if isinstance(monitor_updates_to_return, tuple) else type(monitor_updates_to_return)}"
+                    except Exception as e:
+                        log.exception("Error during monitor update wrapper")
+                        # Construct error tuple matching expected output size
+                        error_tuple_list = list(["Error: Update Failed"] * num_monitor_outputs)
+                        error_tuple_list[5] = ( # Index 5 is console log
+                            f"ERROR updating UI:\n{traceback.format_exc()}"
                         )
-                        # Construct mismatch tuple matching expected output size
-                        mismatch_tuple = list([
-                            "Error: Struct Mismatch"
-                        ] * num_monitor_outputs)
-                        mismatch_tuple[5] = (
-                            "UI Update Error: Structure Mismatch"  # Put error in console log
-                        )
-                        monitor_updates_to_return = tuple(mismatch_tuple)
+                        current_monitor_state_tuple = tuple(error_tuple_list)
+                        current_history_data = [{"error": f"Update failed: {e}"}]
 
                     # Return the monitor updates and the current history data
                     # Unpack the tuple for individual component outputs, plus the history state
-                    return *monitor_updates_to_return, current_history_data
+                    return *current_monitor_state_tuple, current_history_data
 
                 # --- MODIFIED: Timer Outputs ---
                 # Index 5 now corresponds to the monitor_log Textbox
@@ -1358,7 +1363,7 @@ else:
                     monitor_plan,  # 2
                     monitor_dependent_tasks,  # 3
                     monitor_thinking,  # 4
-                    monitor_log,  # 5 <<< Was step log snippet, now console log
+                    monitor_log,  # 5 <<< Console log output
                     monitor_memory,  # 6
                     monitor_tool_results,  # 7
                     monitor_status_bar,  # 8
@@ -1377,7 +1382,7 @@ else:
                     initial_hist_title,
                     initial_hist_objective,
                     initial_hist_think,
-                    initial_hist_log_snippet,  # Keep using historical log snippet here
+                    initial_hist_log_snippet,
                     initial_hist_result,
                 ) = view_latest_step(initial_step_history_data)
                 demo.load(
@@ -1386,7 +1391,7 @@ else:
                         initial_hist_title,
                         initial_hist_objective,
                         initial_hist_think,
-                        initial_hist_log_snippet,  # Load historical snippet
+                        initial_hist_log_snippet,
                         initial_hist_result,
                     ),
                     inputs=[],
@@ -1395,13 +1400,13 @@ else:
                         step_hist_title,
                         step_hist_objective,
                         step_hist_thinking,
-                        step_hist_log,  # Update the historical log snippet box
+                        step_hist_log,
                         step_hist_result,
                     ],
                 )
 
             with gr.TabItem("Chat"):
-                # --- MODIFIED: Chat layout ---
+                # ... (Chat layout unchanged) ...
                 gr.Markdown(
                     "Interact with the agent. It considers its identity, activity, and your input."
                 )
@@ -1477,7 +1482,7 @@ else:
                     inputs=[last_generated_task_id_state],
                     outputs=[chat_interaction_feedback],
                 )
-                # --- NEW: Connect create_priority_task ---
+                # --- Connect create_priority_task (unchanged) ---
                 create_task_btn.click(
                     fn=create_priority_task,
                     inputs=[chat_msg_input], # Use the same input box
@@ -1486,7 +1491,7 @@ else:
 
 
             with gr.TabItem("Agent State"):
-                # --- MODIFIED: Agent State layout ---
+                # ... (Agent State layout unchanged) ...
                 gr.Markdown(
                     "View the agent's current identity, task queues, and memory. **Use button to load/refresh data.** Click rows in task tables to see full details."
                 )
@@ -1595,8 +1600,7 @@ else:
                                 "Refresh General Memories"
                             )
 
-                # --- MODIFIED: Agent State Tab Outputs ---
-                # Now includes the raw data states and the details display
+                # --- MODIFIED: Agent State Tab Outputs (unchanged) ---
                 state_tab_outputs = [
                     state_identity,
                     state_pending_tasks,
@@ -1634,8 +1638,7 @@ else:
                     outputs=[state_general_memory_display],
                 )
 
-                # --- NEW: DataFrame Select Events ---
-                # Connect .select event of each DF to the handler
+                # --- DataFrame Select Events (unchanged) ---
                 state_pending_tasks.select(
                     fn=show_task_details,
                     inputs=[pending_tasks_data_state], # Pass state holding raw list
@@ -1656,46 +1659,14 @@ else:
                     inputs=[failed_tasks_data_state],
                     outputs=[state_details_display]
                     )
-                # --- End NEW ---
 
 
 # --- Launch the App & Background Thread ---
 if __name__ == "__main__":
-    # <<< NEW: Redirect stdout/stderr and configure logging handler >>>
-    original_stdout = sys.stdout
-    original_stderr = sys.stderr
-    log_stream_handler = ConsoleLogHandler(console_log_buffer)
+    # --- File logging and stdout/stderr redirection is now handled earlier ---
+    # --- within the main try...except block during initialization ---
 
-    # Redirect stdout and stderr
-    sys.stdout = log_stream_handler
-    sys.stderr = log_stream_handler
-
-    # Configure the root logger to also send output to our handler
-    root_logger = logging.getLogger()
-    # Remove existing StreamHandlers to avoid double printing to original console if basicConfig added one
-    for handler in root_logger.handlers:
-        if isinstance(handler, logging.StreamHandler) and handler.stream in [
-            original_stdout,
-            original_stderr,
-            sys.__stdout__, # Catch default handler if it exists
-            sys.__stderr__
-        ]:
-            log.debug(f"Removing existing StreamHandler: {handler}")
-            root_logger.removeHandler(handler)
-
-    ui_log_handler = logging.StreamHandler(log_stream_handler)
-    log_formatter = logging.Formatter(
-        "[%(asctime)s] [%(levelname)s][%(name)s] %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-    ui_log_handler.setFormatter(log_formatter)
-    root_logger.addHandler(ui_log_handler)
-    root_logger.setLevel(config.LOG_LEVEL)  # Ensure root logger level is set
-
-    print("--- Autonomous Agent App Start ---")  # This should now go to the buffer
-    log.info("Console output redirected to UI buffer.")
-    # --- End NEW Redirection ---
-
+    # --- Start Gradio App ---
     try:
         os.makedirs(config.SUMMARY_FOLDER, exist_ok=True)
         log.info(f"Summary directory: {config.SUMMARY_FOLDER}")
@@ -1707,7 +1678,7 @@ if __name__ == "__main__":
         log.info("Agent background processing thread started and paused.")
         try:
             log.info("UI defined. Launching Gradio server...")
-            demo.launch(server_name="0.0.0.0", server_port=7860, share=False)
+            demo.queue().launch(server_name="0.0.0.0", server_port=7860, share=False)
         except Exception as e:
             log.critical(f"Gradio launch failed: {e}", exc_info=True)
             # Restore stdout/stderr before exiting if possible
@@ -1715,6 +1686,8 @@ if __name__ == "__main__":
             sys.stderr = original_stderr
             if agent_instance:
                 agent_instance.shutdown()
+            if file_log_handler: # Close file handler
+                file_log_handler.close()
             sys.exit("Gradio launch failed.")
     else:
         log.warning("Agent init failed. Launching minimal error UI.")
@@ -1727,14 +1700,20 @@ if __name__ == "__main__":
             # Restore stdout/stderr before exiting if possible
             sys.stdout = original_stdout
             sys.stderr = original_stderr
+            if file_log_handler: # Close file handler
+                file_log_handler.close()
             sys.exit("Gradio launch failed.")
 
     log.info("Gradio App stopped. Requesting agent shutdown...")
     if agent_instance:
         agent_instance.shutdown()
 
-    # Restore stdout/stderr after Gradio stops
+    # Restore stdout/stderr and close file handler after Gradio stops
     sys.stdout = original_stdout
     sys.stderr = original_stderr
+    if file_log_handler:
+        log.info("Closing log file handler.")
+        file_log_handler.close()
+
     log.info("Shutdown complete.")
-    print("\n--- Autonomous Agent App End ---")  # This goes to the actual console
+    print("\n--- Autonomous Agent App End ---") # This goes to the actual console

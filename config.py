@@ -11,8 +11,9 @@ OUTPUT_FOLDER = os.environ.get("OUTPUT_FOLDER", "./output")
 ARTIFACT_FOLDER = os.environ.get(
     "ARTIFACT_FOLDER", os.path.join(OUTPUT_FOLDER, "artifacts")
 )
-# --- NEW: Archive Folder for overwritten files ---
 ARCHIVE_FOLDER = os.path.join(ARTIFACT_FOLDER, ".archive")
+# --- NEW: Log Folder ---
+LOG_FOLDER = os.path.join(OUTPUT_FOLDER, "logs")
 
 
 # --- Ollama Configuration ---
@@ -99,16 +100,16 @@ try:
     os.makedirs(SUMMARY_FOLDER, exist_ok=True)
     os.makedirs(DB_PATH, exist_ok=True)
     os.makedirs(DOC_ARCHIVE_DB_PATH, exist_ok=True)
-    os.makedirs(ARCHIVE_FOLDER, exist_ok=True)  # <<<--- Ensure archive folder exists
+    os.makedirs(ARCHIVE_FOLDER, exist_ok=True)
+    os.makedirs(LOG_FOLDER, exist_ok=True) # <<<--- Ensure log folder exists
     print(f"[CONFIG] Ensured output folders exist:")
     print(f"  Output:   {os.path.abspath(OUTPUT_FOLDER)}")
     print(f"  Artifacts:{os.path.abspath(ARTIFACT_FOLDER)}")
-    print(
-        f"  Archive:  {os.path.abspath(ARCHIVE_FOLDER)}"
-    )  # <<<--- Print archive folder path
+    print(f"  Archive:  {os.path.abspath(ARCHIVE_FOLDER)}")
     print(f"  Summaries:{os.path.abspath(SUMMARY_FOLDER)}")
     print(f"  Memory DB:{os.path.abspath(DB_PATH)}")
     print(f"  Doc DB:   {os.path.abspath(DOC_ARCHIVE_DB_PATH)}")
+    print(f"  Logs:     {os.path.abspath(LOG_FOLDER)}") # <<<--- Print log folder path
 except Exception as e:
     print(f"[CONFIG] WARNING: Could not create output folders: {e}")
 
@@ -126,7 +127,8 @@ print(f"  ENABLE_MEMORY_SUMMARIZATION={ENABLE_MEMORY_SUMMARIZATION}")
 print(f"  DELETE_MEMORIES_AFTER_SUMMARY={DELETE_MEMORIES_AFTER_SUMMARY}")
 print(f"  QLORA_DATASET_PATH={QLORA_DATASET_PATH}")
 print(f"  ARTIFACT_FOLDER={ARTIFACT_FOLDER}")
-print(f"  ARCHIVE_FOLDER={ARCHIVE_FOLDER}")  # <<<--- Print archive folder path
+print(f"  ARCHIVE_FOLDER={ARCHIVE_FOLDER}")
+print(f"  LOG_FOLDER={LOG_FOLDER}") # <<<--- Print log folder config
 print(f"  DOC_ARCHIVE_DB_PATH={DOC_ARCHIVE_DB_PATH}")
 print(f"  DOC_ARCHIVE_COLLECTION_NAME={DOC_ARCHIVE_COLLECTION_NAME}")
 print(f"  UI_LOG_MAX_LENGTH={UI_LOG_MAX_LENGTH}")
