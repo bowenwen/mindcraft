@@ -560,7 +560,8 @@ class AutonomousAgent:
             # Include archive info if relevant from file tool
             archived_path = tool_results.get('result', {}).get('archived_filepath')
             archive_info = f" (Archived previous to: {archived_path})" if archived_path else ""
-            tool_result_summary = str(tool_results)[:200] + archive_info
+            # Ensure tool_results is handled gracefully if not a dict
+            tool_result_summary = (str(tool_results)[:200] + archive_info) if isinstance(tool_results, dict) else str(tool_results)[:200]
             memory_query += f"\nLast result summary: {tool_result_summary}"
 
 
@@ -634,7 +635,14 @@ class AutonomousAgent:
                  if archive_path:
                      archive_path_info = f"\nNote: Previous version archived to '{archive_path}'"
             # ---
-            prompt_text += f"\n**Results from Last Action (Previous Step):**\nTool: {tool_name} (Action: {tool_action})\nResult:\n```json\n{json.dumps(tool_results.get('result', tool_results), indent=2, ensure_ascii=False)}\n```{archive_path_info}\n"
+            # Ensure result is serializable for the prompt context
+            try:
+                result_context = json.dumps(tool_results.get('result', tool_results), indent=2, ensure_ascii=False)
+            except TypeError:
+                log.warning("Tool result for prompt context was not JSON serializable, using string representation.")
+                result_context = str(tool_results.get('result', tool_results))
+
+            prompt_text += f"\n**Results from Last Action (Previous Step):**\nTool: {tool_name} (Action: {tool_action})\nResult:\n```json\n{result_context}\n```{archive_path_info}\n"
         else:
             prompt_text += "\n**Results from Last Action (Previous Step):**\nNone.\n"
 
@@ -1398,50 +1406,90 @@ class AutonomousAgent:
         user_suggested_move_on = self.session_state.get(
             "user_suggestion_move_on_pending", False
         )
+        # Initialize variables used across both if/else branches
+        tool_results_for_ui = None
+        thinking_to_store = "(No thinking process recorded for this step)"
+        action_type = "internal" # Default action type for plan completion
+        step_num_display = task.current_step_index + 1
+        total_steps = len(task.plan) if task.plan else 0
+        current_step_objective = (
+             task.plan[task.current_step_index]
+             if task.plan and task.current_step_index < len(task.plan)
+             else "(Plan Completion/Summary)"
+        )
+
+        # --- Initialize step_details_for_history earlier ---
+        step_details_for_history = {
+            "task_id": task.id,
+            "step": step_num_display, # Initial value, updated below if needed
+            "step_objective": current_step_objective, # Initial value, updated below if needed
+            "task_attempt": task.reattempt_count + 1,
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "thinking": thinking_to_store, # Default, updated below
+            "action_type": action_type, # Default, updated below
+            "action_params": None,
+            "result_status": None,
+            "result_summary": None,
+            "log_snippet": None, # Calculated at the end
+        }
+        # --- END Initialization ---
+
 
         if not task.plan or task.current_step_index >= len(task.plan):
-            step_num_display = 0
-            total_steps = 0
-            current_step_objective = ""
+            # Handle plan completion / final summarization
+            step_num_display = len(task.plan) if task.plan else 0 # Final step num
+            total_steps = step_num_display
+            current_step_objective = "(Plan Completed - Final Summary)"
             log.info(
-                f"Task {task.id} plan complete ({len(task.plan)} steps). Generating final summary."
+                f"Task {task.id} plan complete ({total_steps} steps). Generating final summary."
             )
             step_status = "final_summarizing"
-            # Summarization handles updating task result/reflections if needed
-            self._summarize_and_prune_task_memories(task)
-            # Fetch potentially updated task object
-            final_task_obj = self.task_queue.get_task(task.id)
+
+            # Update history details for this completion step
+            step_details_for_history.update({
+                "step": step_num_display + 1, # Indicate step *after* last plan step
+                "step_objective": current_step_objective,
+                "thinking": "Plan execution finished. Generating final task summary and potentially pruning memories.",
+                "action_type": "task_completion_summary", # Specific action type
+                "result_status": "processing",
+                "result_summary": "Generating summary...",
+            })
+            step_log.append(f"--- Task '{task.id}' | Step {step_details_for_history['step']}/{total_steps} (Plan Completed) ---")
+            step_log.append(f"Objective: {current_step_objective}")
+
+            self._summarize_and_prune_task_memories(task) # Perform summary
+            final_task_obj = self.task_queue.get_task(task.id) # Get updated task
             task = final_task_obj or task
-            # Ensure status is set to completed if not already
+
+            # Ensure task status is 'completed'
             if task.status != "completed":
                 self.task_queue.update_task(
-                    task.id,
-                    "completed",
-                    result=task.result,
-                    reflections=task.reflections,
+                    task.id, "completed", result=task.result, reflections=task.reflections
                 )
-                task.status = "completed" # Update local copy too
+                task.status = "completed"
                 task_status_updated_this_step = True
+
             step_log.append("[ACTION] Plan complete. Generated final summary.")
             final_answer_text = (
                  (task.result.get('answer') if isinstance(task.result, dict) else str(task.result))
                  if task.result else "(Summary generated)"
             )
-            step_status = "completed" # Step itself is completed
+            step_status = "completed" # Mark step as completed
+
+            # Update history result after summary
+            step_details_for_history["result_status"] = "completed"
+            step_details_for_history["result_summary"] = f"Task completed. Final answer/summary generated: {final_answer_text[:200]}..."
+
         else:
             # --- Proceed with executing the current step ---
-            step_num_display = task.current_step_index + 1
-            total_steps = len(task.plan)
-            current_step_objective = task.plan[task.current_step_index]
+            # step_num_display, total_steps, current_step_objective already set
 
             if user_suggested_move_on:
                 log.info(
                     f"User suggestion 'move on' is pending for task {task.id}, step {step_num_display}."
                 )
                 with self._state_lock:
-                    self.session_state["user_suggestion_move_on_pending"] = (
-                        False  # Consume flag
-                    )
+                    self.session_state["user_suggestion_move_on_pending"] = False
 
             step_log.append(
                 f"--- Task '{task.id}' | Step {step_num_display}/{total_steps} (Step Retry {current_retries}/{config.AGENT_MAX_STEP_RETRIES}, Task Attempt {task.reattempt_count + 1}/{config.TASK_MAX_REATTEMPT}) ---"
@@ -1457,14 +1505,19 @@ class AutonomousAgent:
 
             raw_thinking, action = self.generate_thinking(
                 task=task,
-                tool_results=self._ui_update_state.get('last_tool_results'), # Pass previous results
+                tool_results=self._ui_update_state.get('last_tool_results'),
                 user_suggested_move_on=user_suggested_move_on,
             )
-            action_type = action.get("type", "error")
+            action_type = action.get("type", "error") # Update action_type here
             action_message = action.get("message", "Unknown error")
             action_subtype = action.get("subtype", "unknown_error")
             thinking_to_store = raw_thinking or "Thinking process not extracted."
             step_log.append(f"Thinking:\n{thinking_to_store}")
+
+            # Update history details with thinking/action info for this step
+            step_details_for_history["thinking"] = thinking_to_store
+            step_details_for_history["action_type"] = action_type
+
             self.memory.add_memory(
                 f"Step {step_num_display} Thinking (Action: {action_type}, Subtype: {action_subtype}, Attempt {task.reattempt_count+1}):\n{thinking_to_store}",
                 {
@@ -1477,20 +1530,7 @@ class AutonomousAgent:
                     "task_attempt": task.reattempt_count + 1,
                 },
             )
-            step_details_for_history = {
-                "task_id": task.id,
-                "step": step_num_display,
-                "step_objective": current_step_objective,
-                "task_attempt": task.reattempt_count + 1,
-                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                "thinking": thinking_to_store,
-                "action_type": action_type,
-                "action_params": None,
-                "result_status": None,
-                "result_summary": None,
-                "log_snippet": None,
-            }
-            tool_results_for_ui = None
+
             step_finding = ""
 
             # --- Process Action or Error ---
@@ -1514,12 +1554,13 @@ class AutonomousAgent:
                         "task_attempt": task.reattempt_count + 1,
                     },
                 )
+                # Update history details for LLM error
                 step_details_for_history["result_status"] = "error"
                 step_details_for_history["result_summary"] = (
                     f"LLM Action Error: {action_message} ({action_subtype})"
                 )
 
-                # --- Handle Step Retries / Task Re-attempts for LLM Error ---
+                # Handle Step Retries / Task Re-attempts for LLM Error
                 if current_retries < config.AGENT_MAX_STEP_RETRIES:
                     self.session_state["current_task_retries"] = current_retries + 1
                     log.warning(
@@ -1570,7 +1611,7 @@ class AutonomousAgent:
             elif action_type == "use_tool":
                 tool_name = action.get("tool")
                 params = action.get("parameters")
-                tool_action = params.get("action") if isinstance(params, dict) else None # Added check for dict
+                tool_action = params.get("action") if isinstance(params, dict) else None
                 if tool_name == "status": tool_action = "status_report"
                 log_action_display = tool_action or "(implicit)"
                 log.info(
@@ -1579,6 +1620,7 @@ class AutonomousAgent:
                 step_log.append(
                     f"[ACTION] Use Tool: {tool_name}, Action: {log_action_display}, Params: {json.dumps(params, ensure_ascii=False, indent=2)}"
                 )
+                # Update history details for tool use
                 step_details_for_history["action_params"] = params
 
                 tool_output = self.execute_tool(tool_name, params)
@@ -1587,10 +1629,13 @@ class AutonomousAgent:
                 tool_error = tool_output.get("error")
                 tool_action_from_result = tool_output.get("action", tool_action)
                 result_content = tool_output.get("result", {}) # Result payload is nested
+
+                # Update history result status
                 step_details_for_history["result_status"] = tool_status
 
                 # --- Generate Result Summary for Log/History/Memory ---
-                result_display_str = "(No specific result payload)"
+                # Initialize display string with a default
+                result_display_str = "(Error summarizing result)"
                 summary_limit = 500
                 try:
                     if isinstance(result_content, dict):
@@ -1614,21 +1659,30 @@ class AutonomousAgent:
                         elif tool_name == "status" and "report_content" in result_content:
                              result_display_str = "Generated status report." # Content is too long for summary
                         elif "content" in result_content: # Generic content field
-                            result_display_str = str(result_content['content'])[:300] + ("..." if len(str(result_content['content'])) > 300 else "")
+                            content_str = str(result_content['content'])
+                            result_display_str = content_str[:300] + ("..." if len(content_str) > 300 else "")
                         else: # Fallback JSON dump
                             result_display_str = json.dumps(result_content, indent=None, ensure_ascii=False) # Compact JSON
                     else: # If result_content is not a dict
                         result_display_str = str(result_content)
+
+                    # Ensure it's not excessively long even after specific handling
+                    if len(result_display_str) > 1000:
+                         result_display_str = result_display_str[:1000] + "..."
+
                 except Exception as summ_e:
                     log.warning(f"Error summarizing tool result: {summ_e}")
-                    result_display_str = str(result_content)
+                    # Use the initial default error message
+                    result_display_str = "(Error summarizing result)"
 
-                # Truncate summary if needed
+                # Truncate summary for history view if needed
                 result_summary_for_history = result_display_str[:summary_limit] + (
                     "..." if len(result_display_str) > summary_limit else ""
                 )
                 if tool_error: # Prepend error to summary
                     result_summary_for_history = f"Error: {tool_error}\n---\n{result_summary_for_history}"[:summary_limit] + ("..." if len(result_summary_for_history) > summary_limit else "")
+
+                # --- Update history result summary ---
                 step_details_for_history["result_summary"] = result_summary_for_history
                 # --- End Summary Generation ---
 
@@ -1636,7 +1690,6 @@ class AutonomousAgent:
                 task.cumulative_findings += step_finding
 
                 # Add memory record of the tool execution
-                # Limit size of params and summary stored in memory for performance
                 mem_params = json.dumps(params)[:500] + ("..." if len(json.dumps(params)) > 500 else "")
                 mem_summary = result_summary_for_history # Use the already generated summary
                 self.memory.add_memory(
@@ -1648,13 +1701,13 @@ class AutonomousAgent:
                         "tool_name": tool_name,
                         "action": tool_action_from_result,
                         "result_status": tool_status,
-                        "params_snippet": mem_params, # Store snippet
+                        "params_snippet": mem_params,
                         "task_attempt": task.reattempt_count + 1,
                     },
                 )
 
                 # --- Handle Tool Result Status ---
-                if tool_status in ["success", "completed", "completed_malformed_output", "completed_unserializable", "completed_with_issue", "success_archived"]: # Added success_archived
+                if tool_status in ["success", "completed", "completed_malformed_output", "completed_unserializable", "completed_with_issue", "success_archived"]:
                     if tool_status not in ["success", "completed", "success_archived"]:
                         log.warning(
                             f"Tool '{tool_name}' action '{tool_action_from_result}' finished step {step_num_display} with non-ideal status: {tool_status}."
@@ -1688,7 +1741,7 @@ class AutonomousAgent:
                             "task_attempt": task.reattempt_count + 1,
                         },
                     )
-                    # --- Handle Step Retries / Task Re-attempts for Tool Failure ---
+                    # Handle Step Retries / Task Re-attempts for Tool Failure
                     if current_retries < config.AGENT_MAX_STEP_RETRIES:
                         self.session_state["current_task_retries"] = current_retries + 1
                         log.warning(
@@ -1760,11 +1813,14 @@ class AutonomousAgent:
                 answer = action.get("answer", "").strip()
                 reflections = action.get("reflections", "").strip()
                 final_answer_text = answer
+
+                # Update history for final answer
                 step_details_for_history["result_status"] = "completed"
                 step_details_for_history["result_summary"] = (
                     f"Final Answer Provided:\n{answer[:500]}"
                     + ("..." if len(answer) > 500 else "")
                 )
+
                 print( # Keep this direct print for immediate visibility
                     "\n"
                     + "=" * 15
@@ -1829,15 +1885,23 @@ class AutonomousAgent:
         step_log.append(
             f"Step {current_step_final_idx} duration: {step_duration:.2f}s. Step Outcome: {step_status}"
         )
-        step_details_for_history["log_snippet"] = "\n".join(step_log[-5:]) # Keep limited log snippet for history view
+
+        # Update step history using the now guaranteed-to-exist dictionary
+        # Ensure log_snippet is added *after* step_log is fully populated for the step
+        step_details_for_history["log_snippet"] = "\n".join(step_log[-min(5, len(step_log)):])
+
         with self._state_lock:
-            self.session_state["last_step_details"].append(step_details_for_history)
-            self._ui_update_state["step_history"] = list(
-                self.session_state["last_step_details"]
-            )
+            # Only append if we actually executed something (i.e., step_log is not empty)
+            if step_log:
+                self.session_state["last_step_details"].append(step_details_for_history)
+                self._ui_update_state["step_history"] = list(
+                    self.session_state["last_step_details"]
+                )
+            else:
+                 log.warning("Step log was empty, skipping adding step details to history.")
+
 
         # Task state (findings, step index, status) is primarily managed within this function or via task_queue methods called herein.
-        # self.task_queue.save_queue() # Already saved within update/prepare methods
 
         # Clear session state only if task is *permanently* completed or failed
         if step_status in ["completed", "failed"]:
@@ -1890,15 +1954,15 @@ class AutonomousAgent:
         # Update internal UI state dictionary with results of this step
         self._update_ui_state(
             status=final_task_status_for_ui,
-            log="\n".join(step_log), # Store full step log internally? Or just rely on console? Let's keep it simple for now.
+            log="\n".join(step_log), # Keep full step log here for potential future use? Or just rely on console?
             thinking=thinking_to_store,
             dependent_tasks=dependent_tasks_list,
             last_action_type=action_type,
-            last_tool_results=tool_results_for_ui,
+            last_tool_results=tool_results_for_ui, # Store the full tool result dict
             recent_memories=recent_memories_for_ui,
             last_web_content=self.session_state.get("last_web_browse_content", "(No recent web browse)"),
             final_answer=final_answer_text,
-            # step_history is already updated via session_state['last_step_details']
+            # step_history is already updated via session_state['last_step_details'] and _update_ui_state
         )
 
         # Return the latest full UI state
@@ -1967,7 +2031,6 @@ class AutonomousAgent:
                         return self.get_ui_update_state()
 
                     # Check reattempt count BEFORE starting (already done in get_next_task)
-                    # if task.reattempt_count >= config.TASK_MAX_REATTEMPT: -> Handled by get_next_task now
 
                     # Found a valid task to start
                     break
@@ -1984,10 +2047,6 @@ class AutonomousAgent:
                      task.plan = None
                      task.current_step_index = 0
                      task.cumulative_findings = ""
-                     # task.reflections = None # Keep potential reflections from previous *skipped* attempts? Let's clear.
-                     # task.result = None # Clear result too
-                     # No need to save queue here, update_task already saved
-                     # self.task_queue.save_queue()
 
                 self.session_state["current_task_retries"] = 0 # Reset STEP retries for new task/attempt
                 with self._state_lock:
@@ -2015,7 +2074,6 @@ class AutonomousAgent:
                     step_result_log.append("Plan generated successfully.")
                     self.task_queue.update_task(task.id, "in_progress")
                     task.status = "in_progress" # Update local copy
-                    # task.cumulative_findings += "\nPlan generated. Starting execution.\n" # Added in _generate_task_plan
                     self.task_queue.save_queue() # Save the updated status and plan
                     self.session_state["current_task_retries"] = 0 # Reset step retries for execution phase
                     self.save_session_state()
@@ -2025,7 +2083,6 @@ class AutonomousAgent:
                          status=task.status,
                          log="\n".join(step_result_log),
                          thinking="(Plan generated, starting execution...)",
-                         # current_plan is updated by refresh
                      )
                     return self.get_ui_update_state()
                 else: # Plan generation failed
