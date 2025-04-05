@@ -21,11 +21,21 @@ class Task:
             if isinstance(depends_on, list)
             else ([depends_on] if isinstance(depends_on, str) else [])
         )
-        self.status = "pending"  # pending, in_progress, completed, failed
+        self.status = "pending"  # pending, planning, in_progress, completed, failed
         self.created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
         self.completed_at = None
         self.result = None  # Store final answer or outcome
         self.reflections = None  # Store LLM reflections on task execution
+
+        # --- Task Planning Fields ---
+        self.plan: Optional[List[str]] = None  # The generated list of steps
+        self.current_step_index: int = 0  # Index of the next step to execute (0-based)
+        self.cumulative_findings: str = ""  # Summary of results from completed steps
+
+        # --- NEW Field for Task Re-attempts ---
+        self.reattempt_count: int = (
+            0  # Number of times this task has been fully restarted
+        )
 
     def to_dict(self) -> Dict[str, Any]:
         """Serializes task object to a dictionary."""
@@ -39,6 +49,10 @@ class Task:
             "completed_at": self.completed_at,
             "result": self.result,
             "reflections": self.reflections,
+            "plan": self.plan,
+            "current_step_index": self.current_step_index,
+            "cumulative_findings": self.cumulative_findings,
+            "reattempt_count": self.reattempt_count,  # <<<--- Serialize new field
         }
 
     @classmethod
@@ -56,4 +70,11 @@ class Task:
         task.completed_at = data.get("completed_at")
         task.result = data.get("result")
         task.reflections = data.get("reflections")
+        task.plan = data.get("plan")
+        task.current_step_index = data.get("current_step_index", 0)
+        task.cumulative_findings = data.get("cumulative_findings", "")
+        task.reattempt_count = data.get(
+            "reattempt_count", 0
+        )  # <<<--- Deserialize new field (default 0)
+
         return task
