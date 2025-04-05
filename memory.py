@@ -355,24 +355,12 @@ class AgentMemory:
         if include_vectors:
             include_fields.append("embeddings")
         try:
-            cleaned_filter = {}
-            for k, v in filter_dict.items():
-                if isinstance(v, (str, int, float, bool)):
-                    cleaned_filter[k] = v
-                else:
-                    log.warning(
-                        f"Metadata filter value for '{k}' is not a simple type ({type(v)}). Skipping key."
-                    )
-            if not cleaned_filter:
-                log.error("Metadata filter became empty after cleaning. Cannot query.")
-                return []
-
-            get_args = {"where": cleaned_filter, "include": include_fields}
+            get_args = {"where": filter_dict, "include": include_fields}
             if limit is not None and isinstance(limit, int) and limit > 0:
                 get_args["limit"] = limit
 
-            results = self.collection.get(**get_args)  # Use dictionary unpacking
-
+            # retrieve results from memory chroma db, then unpack items
+            results = self.collection.get(**get_args)
             memories = []
             if results and results.get("ids"):
                 num_results = len(results["ids"])
