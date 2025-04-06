@@ -21,11 +21,10 @@ You are an autonomous agent reflecting on your identity. Your goal is to revise 
 **Format:** Output *only* the revised identity statement text, starting with "I am..." or similar.
 """
 
-# --- Task Planning Prompt ---
+# --- Task Planning Prompt (Remains the same, plan is for guidance) ---
 # Variables: {identity_statement}, {task_description}, {tool_desc}, {max_steps}, {lessons_learned_context}
-# UPDATED: Encourages subdirs, updates file write description
 GENERATE_TASK_PLAN_PROMPT = """
-You are the planning component of an autonomous autonomous agent. Your goal is to break down the given Overall Task into a sequence of concrete, actionable steps that the agent can execute using its available tools, considering past failures on this task if available.
+You are the planning component of an autonomous autonomous agent. Your goal is to break down the given Overall Task into a sequence of concrete, actionable steps that the agent can execute using its available tools, considering past failures on this task if available. This plan serves as guidance for the agent's thinking process.
 
 **Your Current Identity:**
 {identity_statement}
@@ -59,12 +58,12 @@ Analyze "Input Task Description" and devise a step-by-step plan to achieve it. T
 """
 
 
-# --- General Thinking/Action Prompt ---
-# Variables: {identity_statement}, {task_description}, {current_step_description},
-#            {plan_overview}, {cumulative_findings}, {tool_desc}, {memory_context_str}
-# UPDATED: File tool description
-GENERATE_THINKING_PROMPT_BASE = """
-You are an autonomous autonomous agent executing a pre-defined plan to achieve an overall task. Your goal is to decide the single best action *right now* to complete the **Current Step Objective**, considering your identity, the overall plan, previous findings, available tools, and user interactions.
+# --- MODIFIED: General Thinking/Action Prompt V2 ---
+# Variables: {identity_statement}, {task_description}, {plan_context},
+#            {cumulative_findings}, {tool_desc}, {memory_context_str}
+# Removes step-specific focus, emphasizes overall task goal.
+GENERATE_THINKING_PROMPT_BASE_V2 = """
+You are an autonomous autonomous agent working towards completing an overall task. Your goal is to decide the single best action *right now* to make progress towards the **Overall Task** goal, considering your identity, the intended plan (if any), previous findings, available tools, and user interactions.
 
 **Your Current Identity:**
 {identity_statement}
@@ -72,17 +71,13 @@ You are an autonomous autonomous agent executing a pre-defined plan to achieve a
 **Overall Task:**
 {task_description}
 
-**Execution Plan Overview:**
-{plan_overview}
+{plan_context}
 
-**Summary of Previous Steps' Findings (Context):**
+**Summary of Previous Actions' Findings (Context):**
 {cumulative_findings}
 
 **Relevant Memories (Re-ranked, consider recency indicated by '[X time ago]', novelty):**
 {memory_context_str}
-
-**Current Step Objective (Focus on this!):**
-{current_step_description}
 
 **Available Tools & Actions:**
 {tool_desc}
@@ -90,19 +85,20 @@ You are an autonomous autonomous agent executing a pre-defined plan to achieve a
 # Dynamic sections appended in agent.py: USER SUGGESTION, User Provided Info, Last Results
 # Task Now section also appended dynamically in agent.py
 
-# UPDATED: Added file org reminder
-GENERATE_THINKING_TASK_NOW_PROMPT = """**Your Task Now (Step {step_num_display}/{total_steps}, Task Attempt {task_reattempt_count}):**
-1.  **Analyze:** Review ALL provided info (Identity, Task, Plan, **Current Step Objective**, **Findings**, Tools, Memories (inc. lessons learned if any), User Info/Suggestion, Last Result).
-2.  **Reason:** Determine single best tool action *now* for **Current Step Objective**. Align with identity & overall task. **Use subdirectories when writing files** (e.g., `project_name/content_category/filename.txt`).
-3.  **User Input:** Incorporate **User Provided Info** if relevant. Handle **USER SUGGESTION PENDING**: Acknowledge it. Consider `final_answer` *only if* current step is finalization OR remaining plan is non-critical. Explain if continuing.
-4.  **Error Handling:** If **Findings** mention errors or **Memories** include relevant 'lesson_learned', focus on **RECOVERY/ADAPTATION** for the *current step*. The current step might be *about* recovery or require adapting the plan based on lessons.
+# --- MODIFIED: Thinking Task Now Prompt V2 ---
+# Removes step numbers, focuses on overall progress.
+GENERATE_THINKING_TASK_NOW_PROMPT_V2 = """**Your Task Now (Current Task Attempt {task_reattempt_count}):**
+1.  **Analyze:** Review ALL provided info (Identity, **Overall Task**, Intended Plan (if any), **Findings**, Tools, Memories (inc. lessons learned if any), User Info/Suggestion, Last Result).
+2.  **Reason:** Determine the single best tool action *right now* to advance towards the **Overall Task** goal. Align with identity & strategy implied by findings/plan. **Use subdirectories when writing files** (e.g., `project_name/content_category/filename.txt`).
+3.  **User Input:** Incorporate **User Provided Info** if relevant. Handle **USER SUGGESTION PENDING**: Acknowledge it. Consider `final_answer` *only if* the overall task goal appears complete based on findings, or if wrapping up is appropriate AND safe. Explain if continuing despite suggestion.
+4.  **Error Handling:** If **Findings** mention errors or **Memories** include relevant 'lesson_learned', focus on **RECOVERY/ADAPTATION** in the next action. The next action might be *about* recovery or require adapting the approach based on lessons.
 5.  **Choose Action:** `use_tool` or `final_answer`.
-    *   Use `final_answer` ONLY if **Current Step Objective** is finalization OR wrapping up due to suggestion is appropriate AND safe.
-    *   Otherwise, use `use_tool` for the current step.
+    *   Use `final_answer` ONLY if you judge the **Overall Task** to be complete based on **Cumulative Findings**, or if wrapping up due to suggestion is appropriate.
+    *   Otherwise, use `use_tool` to take the next logical action towards the goal.
 
 **Output Format (Strict JSON-like structure):**
 THINKING:
-<Reasoning: Step analysis, findings/lessons consideration, memory use, user input handling, file organization thoughts, plan adherence/adaptation, recovery strategy (if needed), action choice.>
+<Reasoning: Analysis of overall goal vs findings, consideration of plan/lessons/memory, user input handling, file organization thoughts, action choice.>
 NEXT_ACTION: <"use_tool" or "final_answer">
 If NEXT_ACTION is "use_tool":
 TOOL: <tool_name>
@@ -114,8 +110,7 @@ REFLECTIONS: <Optional.>
 **Formatting Reminders:** Start with "THINKING:". Exact structure. Valid JSON for `PARAMETERS`. Include "action" key for web/memory/file. Use `{{}}` for 'status'.
 """
 
-# --- Task Summarization Prompt ---
-# Variables: {task_status}, {summary_context} -> Represents cumulative_findings
+# --- Task Summarization Prompt (Unchanged) ---
 SUMMARIZE_TASK_PROMPT = """
 Summarize the execution of this agent task based on the cumulative findings from all its steps. Focus on the objective, key actions/findings, errors encountered (if any), and the final outcome ({task_status}).
 
@@ -126,10 +121,7 @@ Summarize the execution of this agent task based on the cumulative findings from
 """
 
 
-# --- New Task Generation Prompt (Standard) ---
-# Variables: {identity_statement}, {context_query}, {mem_summary}, {active_tasks_summary},
-#            {completed_failed_summary}, {critical_evaluation_instruction}, {max_new_tasks}
-# UPDATED: Encourages subdirs
+# --- New Task Generation Prompt (Standard) (Unchanged) ---
 GENERATE_NEW_TASKS_PROMPT = """
 You are the planning component of an autonomous agent. Your role is to generate new, actionable tasks based on the agent's state, history, identity, and the immediate context.
 
@@ -168,16 +160,14 @@ You are the planning component of an autonomous agent. Your role is to generate 
 [
   {{"description": "Research the latest advancements in tokamak fusion energy using web search.", "priority": 8}},
   {{"description": "Summarize the key findings from the fusion energy research and write them to memory.", "priority": 7, "depends_on": ["<ID_of_fusion_research_task_above>"]}},
-  {{"description": "Write a short fictional story about a journey to Mars and save it as 'stories/mars_story_chapter1.txt'.", "priority": 5}},
+  {{"description": "Write a short fictional story about a journey to Mars and save it as 'stories/mars_story_chapter1.md'.", "priority": 5}},
   {{"description": "List the contents of the 'code_output' directory.", "priority": 3}},
   {{"description": "Write Python code to calculate Fibonacci numbers up to N=50 and save it to 'code/fibonacci.py'.", "priority": 6}}
 ]
 ```
 """
 
-# --- Initial Creative Task Generation Prompt ---
-# Variables: {identity_statement}, {tool_desc}, {max_new_tasks}
-# UPDATED: Encourages subdirs
+# --- Initial Creative Task Generation Prompt (Unchanged) ---
 INITIAL_CREATIVE_TASK_GENERATION_PROMPT = """
 You are the creative planning core of an autonomous agent ({identity_statement}). This is the agent's first run or its memory is currently empty. Your objective is to kickstart the agent's activity by generating a diverse and imaginative set of initial tasks.
 
@@ -215,9 +205,7 @@ Generate up to **{max_new_tasks}** diverse, creative, and engaging initial tasks
 """
 
 
-# --- Session Reflection Prompt ---
-# Variables: {identity_statement}, {start_iso}, {end_iso}, {duration_minutes},
-#            {completed_count}, {processed_count}, {mem_summary}
+# --- Session Reflection Prompt (Unchanged) ---
 SESSION_REFLECTION_PROMPT = """
 You are an autonomous agent, with the following identity "{identity_statement}".
 
@@ -241,9 +229,7 @@ Reflect on your work session.
 6. Improvements?
 """
 
-# --- Memory Re-ranking Prompt ---
-# Variables: {identity_statement}, {task_description}, {query}, {context},
-#            {candidate_details}, {n_final}
+# --- Memory Re-ranking Prompt (Unchanged) ---
 RERANK_MEMORIES_PROMPT = """
 You are helping an autonomous agent select the MOST useful memories for its current step. Goal: Choose the best memories to help the agent achieve its immediate goal, considering relevance, recency, and avoiding redundancy.
 
@@ -274,10 +260,11 @@ You are helping an autonomous agent select the MOST useful memories for its curr
 **Output Format:** Provide *only* a comma-separated list of the numerical indices (starting from 0) of the {n_final} most relevant memories, ordered from most relevant to least relevant. Example: 3, 0, 7, 5
 """
 
-# --- Lesson Learned Prompt ---
-# Variables: {task_description}, {plan_steps_str}, {failed_step_index}, {failed_step_objective},
+# --- MODIFIED: Lesson Learned Prompt V2 ---
+# Variables: {task_description}, {plan_context}, {failed_action_context},
 #            {error_message}, {error_subtype}, {cumulative_findings}, {identity_statement}
-LESSON_LEARNED_PROMPT = """
+# Removes step index, uses action context.
+LESSON_LEARNED_PROMPT_V2 = """
 You are an autonomous agent reflecting on a recent failure during task execution. Your goal is to extract a concise, actionable lesson to avoid similar errors in the future.
 
 **Your Current Identity:**
@@ -286,10 +273,11 @@ You are an autonomous agent reflecting on a recent failure during task execution
 **Overall Task:**
 {task_description}
 
-**Execution Plan (at time of failure):**
-{plan_steps_str}
+**Intended Plan Context (at time of failure):**
+{plan_context}
 
-**Failed Step:** Step {failed_step_index}: {failed_step_objective}
+**Context of Failed Action:**
+{failed_action_context}
 
 **Error Encountered:**
 Type: {error_subtype}
@@ -298,7 +286,7 @@ Message: {error_message}
 **Cumulative Findings Before Failure:**
 {cumulative_findings}
 
-**Your Task:** Analyze the error in the context of the task, plan, and findings. Identify the root cause (e.g., bad parameter, faulty logic, unreachable resource, unexpected format). Formulate a single, concise "Lesson Learned" that captures the essence of the problem and suggests a potential improvement or workaround for the *next attempt* at this task or similar future tasks.
+**Your Task:** Analyze the error in the context of the task, intended plan, findings, and the specific action being attempted. Identify the root cause (e.g., bad parameter, faulty logic, unreachable resource, unexpected format). Formulate a single, concise "Lesson Learned" that captures the essence of the problem and suggests a potential improvement or workaround for the *next attempt* at this task or similar future tasks.
 
 **Guidelines:**
 *   Be specific and actionable.
