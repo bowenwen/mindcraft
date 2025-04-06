@@ -13,12 +13,12 @@ from typing import Dict, Any, Optional, List
 
 from bs4 import BeautifulSoup, NavigableString, Tag
 import fitz  # PyMuPDF
-import chromadb  # <<<--- NEW
-from langchain_text_splitters import RecursiveCharacterTextSplitter  # <<<--- NEW
+import chromadb
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from .base import Tool
 import config  # Use top-level import
-from utils import setup_doc_archive_chromadb  # <<<--- NEW
+from utils import setup_doc_archive_chromadb  # Use util for shared DB setup
 
 import logging
 
@@ -42,7 +42,7 @@ class WebTool(Tool):
     'search' (requires 'query'): Uses SearXNG to find information. Returns search results.
     'browse' (requires 'url', optional 'query'):
         - If 'query' is NOT provided: Fetches and parses content (HTML, PDF, JSON, TXT). Returns full (possibly truncated) content.
-        - If 'query' IS provided: Fetches full content, chunks it, stores chunks in a document archive DB (if not already present),
+        - If 'query' IS provided: Fetches full content, chunks it, stores chunks in the SHARED document archive DB (if not already present),
           then performs a semantic search on those chunks using the 'query', returning only the most relevant snippets.
     Note: Browsing may fail on sites with strong bot protection (e.g., Cloudflare).
     """
@@ -55,7 +55,7 @@ class WebTool(Tool):
                 "Actions: "
                 "'search' (requires 'query'): Uses SearXNG to find information. Returns search results. "
                 "'browse' (requires 'url', optional 'query'): Fetches and parses content (HTML, PDF, JSON, TXT). "
-                "If 'query' is provided, fetches full content, archives it, and returns only relevant snippets matching the query. "
+                "If 'query' is provided, fetches full content, archives it in the SHARED document DB, and returns only relevant snippets matching the query. "
                 "Otherwise, returns the full (potentially truncated) page content. "
                 "Note: Browsing may fail on sites with strong bot protection (e.g., Cloudflare)."
             ),
@@ -75,19 +75,22 @@ class WebTool(Tool):
         # Headers for search (unchanged)
         self.search_headers = {"Accept": "application/json"}
 
-        # --- NEW: Document Archiving Setup ---
+        # --- Document Archiving Setup (Use shared DB) ---
         self.doc_archive_collection: Optional[chromadb.Collection] = None
         try:
+            # Use the utility function which now points to the shared DB path
             self.doc_archive_collection = setup_doc_archive_chromadb()
             if self.doc_archive_collection is None:
                 log.error(
-                    "Document archive DB collection failed to initialize. Browse-with-query will not work."
+                    "SHARED Document archive DB collection failed to initialize. Browse-with-query will not work."
                 )
             else:
-                log.info("Document archive DB collection initialized successfully.")
+                log.info(
+                    "SHARED Document archive DB collection initialized successfully."
+                )
         except Exception as e:
             log.critical(
-                f"Failed to initialize document archive DB: {e}", exc_info=True
+                f"Failed to initialize SHARED document archive DB: {e}", exc_info=True
             )
 
         self.text_splitter = RecursiveCharacterTextSplitter(
@@ -95,12 +98,12 @@ class WebTool(Tool):
             chunk_overlap=config.DOC_ARCHIVE_CHUNK_OVERLAP,
             length_function=len,
             is_separator_regex=False,
-            separators=["\n\n", "\n", ". ", "? ", "! ", " ", ""],  # Sensible defaults
+            separators=["\n\n", "\n", ". ", "? ", "! ", " ", ""],
         )
-        # --- End NEW Setup ---
+        # --- End Document Archiving Setup ---
 
+    # _get_browse_headers remains unchanged
     def _get_browse_headers(self, url: str) -> Dict[str, str]:
-        """Generates headers for a specific browse request, including a random User-Agent and Referer."""
         headers = self.session.headers.copy()
         headers["User-Agent"] = random.choice(COMMON_USER_AGENTS)
         try:
@@ -109,7 +112,6 @@ class WebTool(Tool):
             headers["Referer"] = referer
         except Exception:
             log.warning(f"Could not parse URL '{url}' to generate Referer header.")
-            pass
         return headers
 
     # --- Helper methods for HTML/Text Cleaning (unchanged) ---
@@ -292,24 +294,20 @@ class WebTool(Tool):
                     )
                 )
             if i < len(cleaned_lines) - 1:
-                if is_block_end and not next_is_block_start:
-                    final_text += "\n\n"
-                else:
-                    final_text += "\n"
+                final_text += (
+                    "\n\n" if is_block_end and not next_is_block_start else "\n"
+                )
         return final_text.strip()
 
     # --- End Helper methods ---
 
-    # _run_search method remains unchanged from previous version
+    # _run_search remains unchanged
     def _run_search(self, query: str) -> Dict[str, Any]:
-        """Executes a search query against the configured SearXNG instance."""
         log.info(f"Executing SearXNG Search: '{query}'")
         if not config.SEARXNG_BASE_URL:
             return {"error": "SearXNG base URL is not configured for search action."}
-
         params = {"q": query, "format": "json"}
         searxng_url = config.SEARXNG_BASE_URL.rstrip("/") + "/search"
-
         try:
             response = requests.get(
                 searxng_url,
@@ -318,7 +316,6 @@ class WebTool(Tool):
                 timeout=config.SEARXNG_TIMEOUT,
             )
             response.raise_for_status()
-
             try:
                 search_data = response.json()
             except json.JSONDecodeError:
@@ -326,7 +323,6 @@ class WebTool(Tool):
                     f"Failed SearXNG JSON decode. Status: {response.status_code}. Resp: {response.text[:200]}..."
                 )
                 return {"error": "Failed JSON decode from SearXNG."}
-
             processed = []
             if "infoboxes" in search_data and isinstance(
                 search_data["infoboxes"], list
@@ -406,12 +402,8 @@ class WebTool(Tool):
             log.exception(f"Unexpected error during SearXNG search: {e}")
             return {"error": f"Unexpected web search error."}
 
-    # --- MODIFIED: _run_browse ---
+    # _run_browse (Corrected)
     def _run_browse(self, url: str, query: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Fetches and extracts content. If query is provided, archives the content
-        and performs semantic search on chunks. Otherwise, returns full (truncated) content.
-        """
         log.info(
             f"Attempting to browse URL: {url}"
             + (f" with query: '{query[:50]}...'" if query else "")
@@ -423,23 +415,18 @@ class WebTool(Tool):
             )
             return {"error": "Invalid URL format. Must start with http:// or https://."}
 
-        # --- Step 1: Fetch content (common logic) ---
         extracted_text = ""
         content_source = "unknown"
-        final_url = url  # Placeholder, updated after request
+        final_url = url
         response = None
 
-        try:
+        try:  # Main try for browse
             request_headers = self._get_browse_headers(url)
             log.debug(f"Using headers for {url}: {request_headers}")
 
             response = self.session.get(
-                url,
-                headers=request_headers,
-                timeout=25,  # Slightly longer timeout for potentially larger downloads
-                allow_redirects=True,
+                url, headers=request_headers, timeout=25, allow_redirects=True
             )
-
             final_url = response.url
             log.info(
                 f"Request to {url} resulted in status {response.status_code} at {final_url}"
@@ -450,20 +437,23 @@ class WebTool(Tool):
                     f"Received 403 Forbidden for {final_url}. Site may be blocking automated access."
                 )
                 return {
-                    "error": f"Access denied (403 Forbidden) when trying to browse {final_url}. The site may block automated tools."
+                    "error": f"Access denied (403 Forbidden) when trying to browse {final_url}. The site may block automated tools.",
+                    "query_mode": bool(query),
                 }
             elif response.status_code == 404:
                 log.warning(f"Received 404 Not Found for {final_url}.")
-                return {"error": f"Page not found (404 Not Found) at {final_url}."}
-
-            response.raise_for_status()  # Raise for other 4xx/5xx errors
+                return {
+                    "error": f"Page not found (404 Not Found) at {final_url}.",
+                    "query_mode": bool(query),
+                }
+            response.raise_for_status()
 
             content_type = (
                 response.headers.get("Content-Type", "").lower().split(";")[0].strip()
             )
             log.info(f"URL Content-Type detected: '{content_type}' from {final_url}")
 
-            # --- Step 2: Parse content (common logic, but DO NOT truncate yet) ---
+            # --- Step 2: Parse content ---
             if content_type == "application/pdf":
                 content_source = "pdf"
                 log.info("Parsing PDF content...")
@@ -480,9 +470,7 @@ class WebTool(Tool):
                             pdf_texts.append(page_text.strip())
                     doc.close()
                     full_text = "\n".join(pdf_texts).strip()
-                    extracted_text = self._clean_text_basic(
-                        full_text
-                    )  # Clean but don't truncate
+                    extracted_text = self._clean_text_basic(full_text)
                     log.info(
                         f"Extracted text from PDF (Full Length: {len(extracted_text)})."
                     )
@@ -490,14 +478,15 @@ class WebTool(Tool):
                     log.error(
                         f"Error parsing PDF from {final_url}: {pdf_err}", exc_info=True
                     )
-                    return {"error": f"Failed to parse PDF content. Error: {pdf_err}"}
+                    return {
+                        "error": f"Failed to parse PDF content. Error: {pdf_err}",
+                        "query_mode": bool(query),
+                    }
 
             elif content_type == "text/html":
                 content_source = "html_markdown"
                 log.info("Parsing HTML content to Markdown...")
-                extracted_text = self._parse_html_to_markdown(
-                    response.text
-                )  # Clean but don't truncate
+                extracted_text = self._parse_html_to_markdown(response.text)
                 log.info(
                     f"Extracted text from HTML as Markdown (Full Length: {len(extracted_text)})."
                 )
@@ -507,53 +496,58 @@ class WebTool(Tool):
                 log.info("Parsing JSON content...")
                 try:
                     json_data = json.loads(response.text)
-                    extracted_text = json.dumps(
-                        json_data, indent=2, ensure_ascii=False
-                    )  # No truncation needed here
+                    extracted_text = json.dumps(json_data, indent=2, ensure_ascii=False)
                     log.info(f"Formatted JSON content (Length: {len(extracted_text)}).")
                 except json.JSONDecodeError as json_err:
                     log.error(f"Invalid JSON received from {final_url}: {json_err}")
                     return {
-                        "error": f"Failed to parse JSON content. Invalid format. Error: {json_err}"
+                        "error": f"Failed to parse JSON content. Invalid format. Error: {json_err}",
+                        "query_mode": bool(query),
                     }
 
             elif content_type.startswith("text/"):
                 content_source = "text"
                 log.info(f"Parsing plain text content ({content_type})...")
-                extracted_text = self._clean_text_basic(
-                    response.text
-                )  # Clean but don't truncate
+                extracted_text = self._clean_text_basic(response.text)
                 log.info(f"Extracted plain text (Full Length: {len(extracted_text)}).")
 
-            else:
+            else:  # Fallback block
                 log.warning(
                     f"Unsupported Content-Type '{content_type}' for URL {final_url}. Attempting fallback."
                 )
-                try:
+                try:  # Inner try for fallback decoding
                     fallback_text = self._clean_text_basic(
                         response.content.decode(
                             response.encoding or "utf-8", errors="replace"
                         )
                     )
-                    if fallback_text and len(fallback_text) > 50:
-                        extracted_text = fallback_text
+                    if fallback_text and len(fallback_text) > 50:  # Check decoded text
+                        extracted_text = fallback_text  # Assign if good
                         content_source = "text_fallback"
                         log.info(
                             f"Extracted fallback text (Full Length: {len(extracted_text)})."
                         )
                     else:
+                        # If no significant fallback text, return error immediately
+                        log.warning(
+                            f"No significant fallback text found for {final_url}."
+                        )
                         return {
-                            "error": f"Cannot browse: Unsupported content type '{content_type}' and no significant fallback text found."
+                            "error": f"Cannot browse: Unsupported content type '{content_type}' and no significant fallback text found.",
+                            "query_mode": bool(query),
                         }
-                except Exception as fallback_err:
+                except Exception as fallback_err:  # Inner except for fallback decoding
                     log.error(
                         f"Error during fallback text extraction for {final_url}: {fallback_err}"
                     )
                     return {
-                        "error": f"Cannot browse: Unsupported content type '{content_type}' and fallback extraction failed."
+                        "error": f"Cannot browse: Unsupported content type '{content_type}' and fallback extraction failed.",
+                        "query_mode": bool(query),
                     }
+            # --- End Parsing Attempts ---
 
-            # Check if we actually got text
+            # --- Check extracted text AFTER all parsing attempts ---
+            # This block is now correctly positioned outside the 'else' for fallback
             if not extracted_text or not extracted_text.strip():
                 log.warning(
                     f"Could not extract significant textual content ({content_source}) from {final_url}"
@@ -567,41 +561,34 @@ class WebTool(Tool):
                     "query_mode": bool(query),
                 }
 
-            # --- Step 3: Handle based on whether a query was provided ---
+            # --- Step 3: Handle based on query ---
             if query and self.doc_archive_collection:
                 log.info(
-                    f"Query provided for {final_url}. Archiving and searching chunks."
+                    f"Query provided for {final_url}. Archiving and searching chunks in SHARED DB."
                 )
                 try:
-                    # Generate document ID based on final URL hash
                     doc_id = hashlib.sha256(final_url.encode("utf-8")).hexdigest()
                     log.debug(f"Generated doc_id '{doc_id}' for URL '{final_url}'")
-
-                    # Check if document chunks already exist
                     existing_chunks = self.doc_archive_collection.get(
-                        where={"doc_id": doc_id},
-                        include=[],  # Only need to check existence
+                        where={"doc_id": doc_id}, include=[]
                     )
-
                     if (
                         existing_chunks
                         and existing_chunks["ids"]
                         and len(existing_chunks["ids"]) > 0
                     ):
                         log.info(
-                            f"Document '{doc_id}' already exists in archive ({len(existing_chunks['ids'])} chunks). Skipping add."
+                            f"Document '{doc_id}' already exists in SHARED archive ({len(existing_chunks['ids'])} chunks). Skipping add."
                         )
                     else:
                         log.info(
-                            f"Document '{doc_id}' not found in archive. Chunking and adding..."
+                            f"Document '{doc_id}' not found in SHARED archive. Chunking and adding..."
                         )
-                        # Chunk the text
                         chunks = self.text_splitter.split_text(extracted_text)
                         if not chunks:
                             log.warning(
                                 f"Text splitter returned no chunks for {final_url}."
                             )
-                            # Fallback to original behavior? Or return error? Let's return an informative message.
                             return {
                                 "status": "completed_with_issue",
                                 "action": "browse",
@@ -609,12 +596,9 @@ class WebTool(Tool):
                                 "message": "Content extracted but failed to chunk for querying.",
                                 "query_mode": True,
                             }
-
                         log.info(
                             f"Split content into {len(chunks)} chunks (Size: {config.DOC_ARCHIVE_CHUNK_SIZE}, Overlap: {config.DOC_ARCHIVE_CHUNK_OVERLAP})."
                         )
-
-                        # Prepare for ChromaDB batch add
                         chunk_docs = []
                         chunk_metadatas = []
                         chunk_ids = []
@@ -629,17 +613,13 @@ class WebTool(Tool):
                                     datetime.timezone.utc
                                 ).isoformat(),
                             }
-                            # Clean metadata (ensure simple types)
                             cleaned_metadata = {k: str(v) for k, v in metadata.items()}
-
                             chunk_docs.append(chunk_text)
                             chunk_metadatas.append(cleaned_metadata)
                             chunk_ids.append(chunk_id)
-
-                        # Add chunks to the archive collection
                         if chunk_ids:
                             log.info(
-                                f"Adding {len(chunk_ids)} chunks to document archive..."
+                                f"Adding {len(chunk_ids)} chunks to SHARED document archive..."
                             )
                             self.doc_archive_collection.add(
                                 documents=chunk_docs,
@@ -647,22 +627,18 @@ class WebTool(Tool):
                                 ids=chunk_ids,
                             )
                             log.info(
-                                f"Successfully added chunks for document '{doc_id}'."
+                                f"Successfully added chunks for document '{doc_id}' to SHARED archive."
                             )
-
-                    # Query the archived chunks for this specific document
                     log.info(
-                        f"Querying archive for '{query[:50]}...' within doc '{doc_id}'..."
+                        f"Querying SHARED archive for '{query[:50]}...' within doc '{doc_id}'..."
                     )
                     n_query_results = config.DOC_ARCHIVE_QUERY_RESULTS
                     query_results = self.doc_archive_collection.query(
                         query_texts=[query],
                         n_results=n_query_results,
-                        where={"doc_id": doc_id},  # <<<--- Filter by doc_id
+                        where={"doc_id": doc_id},
                         include=["metadatas", "documents", "distances"],
                     )
-
-                    # Format the query results
                     snippets = []
                     if (
                         query_results
@@ -670,7 +646,7 @@ class WebTool(Tool):
                         and query_results["ids"][0]
                     ):
                         log.info(
-                            f"Found {len(query_results['ids'][0])} relevant snippets."
+                            f"Found {len(query_results['ids'][0])} relevant snippets in SHARED archive."
                         )
                         for i, chunk_id in enumerate(query_results["ids"][0]):
                             doc = query_results["documents"][0][i]
@@ -686,9 +662,8 @@ class WebTool(Tool):
                             )
                     else:
                         log.info(
-                            "No relevant snippets found in archive for the query within this document."
+                            "No relevant snippets found in SHARED archive for the query within this document."
                         )
-
                     return {
                         "status": "success",
                         "action": "browse",
@@ -696,12 +671,11 @@ class WebTool(Tool):
                         "query_mode": True,
                         "query": query,
                         "retrieved_snippets": snippets,
-                        "message": f"Focused retrieval performed on archived content. Found {len(snippets)} relevant snippets.",
+                        "message": f"Focused retrieval performed on SHARED archived content. Found {len(snippets)} relevant snippets.",
                     }
-
                 except Exception as archive_err:
                     log.exception(
-                        f"Error during document archiving or querying for {final_url}: {archive_err}"
+                        f"Error during SHARED document archiving or querying for {final_url}: {archive_err}"
                     )
                     return {
                         "error": f"Error during document archiving/querying: {archive_err}",
@@ -710,14 +684,14 @@ class WebTool(Tool):
 
             elif query and not self.doc_archive_collection:
                 log.error(
-                    "Query provided for browse, but document archive DB is not available."
+                    "Query provided for browse, but SHARED document archive DB is not available."
                 )
                 return {
-                    "error": "Cannot perform query browse: Document archive database is not configured or failed to initialize.",
+                    "error": "Cannot perform query browse: SHARED document archive database is not configured or failed to initialize.",
                     "query_mode": True,
                 }
 
-            else:  # No query provided, original behavior
+            else:  # No query provided
                 log.info(
                     f"No query provided for {final_url}. Returning full (truncated) content."
                 )
@@ -733,13 +707,12 @@ class WebTool(Tool):
                     )
                     truncated = True
                     message = f"Content browsed successfully but was truncated to approximately {limit} characters."
-
                 result = {
                     "status": "success",
                     "action": "browse",
                     "url": final_url,
                     "content_source": content_source,
-                    "content": extracted_text,  # Return truncated text
+                    "content": extracted_text,
                     "truncated": truncated,
                     "message": message,
                     "query_mode": False,
@@ -749,7 +722,7 @@ class WebTool(Tool):
                 )
                 return result
 
-        # --- Step 4: Error Handling (mostly unchanged, uses final_url) ---
+        # --- Step 4: Error Handling (for main try) ---
         except requests.exceptions.Timeout:
             log.error(f"Request timed out while browsing {url}")
             return {
@@ -779,16 +752,14 @@ class WebTool(Tool):
                 "query_mode": bool(query),
             }
 
+    # run method logic remains the same
     def run(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
-        """Runs either the search or browse action based on parameters."""
         if not isinstance(parameters, dict):
             log.error(f"Invalid params type: {type(parameters)}")
             return {
                 "error": "Invalid parameters format. Expected a JSON object (dict) with an 'action' key."
             }
-
         action = parameters.get("action")
-
         if action == "search":
             query = parameters.get("query")
             if not query or not isinstance(query, str) or not query.strip():
@@ -796,22 +767,19 @@ class WebTool(Tool):
                     "error": "Missing or invalid 'query' parameter for 'search' action."
                 }
             return self._run_search(query)
-
         elif action == "browse":
             url = parameters.get("url")
             if not url or not isinstance(url, str) or not url.strip():
                 return {
                     "error": "Missing or invalid 'url' parameter for 'browse' action."
                 }
-            # Get optional query
             query = parameters.get("query")
             if query is not None and (not isinstance(query, str) or not query.strip()):
                 log.warning(
                     f"Received invalid 'query' parameter for browse (type: {type(query)}). Ignoring query."
                 )
-                query = None  # Treat invalid query as no query
-            return self._run_browse(url, query)  # Pass query to _run_browse
-
+                query = None
+            return self._run_browse(url, query)
         else:
             log.error(f"Invalid action specified for web tool: '{action}'")
             return {

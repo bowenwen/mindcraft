@@ -1,5 +1,5 @@
 # FILE: utils.py
-# autonomous_agent/llm_utils.py
+# autonomous_agent/utils.py
 import os
 import requests
 import time
@@ -16,18 +16,19 @@ from config import (
     OLLAMA_BASE_URL,
     OLLAMA_TIMEOUT,
     MODEL_CONTEXT_LENGTH,
-    ARTIFACT_FOLDER,
+    SHARED_ARTIFACT_FOLDER,  # <<<--- Use shared folder
     SEARXNG_BASE_URL,
     SEARXNG_TIMEOUT,
-    DOC_ARCHIVE_DB_PATH,  # <<<--- NEW
-    DOC_ARCHIVE_COLLECTION_NAME,  # <<<--- NEW
-    OLLAMA_EMBED_MODEL,  # <<<--- NEEDED for Embedding Function
+    SHARED_DOC_ARCHIVE_DB_PATH,  # <<<--- Use shared path
+    DOC_ARCHIVE_COLLECTION_NAME,
+    OLLAMA_EMBED_MODEL,
 )
 
-# Suggestion: Consider adding basic logging setup here or importing from a dedicated logging module
 import logging
 
-logging.basicConfig(level=logging.INFO, format="[%(levelname)s][LLM] %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="[%(levelname)s][UTIL] %(message)s"
+)  # Changed logger name
 log = logging.getLogger(__name__)
 
 
@@ -87,43 +88,45 @@ def call_ollama_api(
     return None
 
 
-# --- NEW: Document Archive ChromaDB Setup ---
+# --- Document Archive ChromaDB Setup (Shared) ---
 def setup_doc_archive_chromadb() -> Optional[chromadb.Collection]:
-    """Initializes ChromaDB client and collection for the document archive."""
+    """Initializes ChromaDB client and collection for the SHARED document archive."""
     log.info(
-        f"Initializing Document Archive ChromaDB client at path: {DOC_ARCHIVE_DB_PATH}"
+        f"Initializing SHARED Document Archive ChromaDB client at path: {SHARED_DOC_ARCHIVE_DB_PATH}"
     )
     try:
+        # Ensure the shared directory exists before initializing client
+        os.makedirs(SHARED_DOC_ARCHIVE_DB_PATH, exist_ok=True)
+
         settings = chromadb.Settings(anonymized_telemetry=False)
         doc_vector_db = chromadb.PersistentClient(
-            path=DOC_ARCHIVE_DB_PATH, settings=settings
+            path=SHARED_DOC_ARCHIVE_DB_PATH, settings=settings
         )
         log.info(
-            f"Getting or creating Doc Archive ChromaDB collection '{DOC_ARCHIVE_COLLECTION_NAME}'"
+            f"Getting or creating SHARED Doc Archive ChromaDB collection '{DOC_ARCHIVE_COLLECTION_NAME}'"
         )
-        # We still use the same embedding model defined in config
         embedding_function = OllamaEmbeddingFunction(
             url=f"{OLLAMA_BASE_URL}/api/embeddings", model_name=OLLAMA_EMBED_MODEL
         )
         doc_archive_collection = doc_vector_db.get_or_create_collection(
             name=DOC_ARCHIVE_COLLECTION_NAME,
             embedding_function=embedding_function,
-            metadata={"hnsw:space": "cosine"},  # Use cosine similarity
+            metadata={"hnsw:space": "cosine"},
         )
-        log.info("Document Archive ChromaDB collection ready.")
+        log.info("SHARED Document Archive ChromaDB collection ready.")
         return doc_archive_collection
     except Exception as e:
         log.critical(
-            f"Could not initialize Document Archive ChromaDB at {DOC_ARCHIVE_DB_PATH}.",
+            f"Could not initialize SHARED Document Archive ChromaDB at {SHARED_DOC_ARCHIVE_DB_PATH}.",
             exc_info=True,
         )
         return None
 
 
-# --- End NEW Document Archive ChromaDB Setup ---
+# --- End Document Archive ChromaDB Setup ---
 
 
-# --- Status Check Functions ---
+# --- Status Check Functions (Unchanged) ---
 def check_ollama_status(
     base_url: str = OLLAMA_BASE_URL, timeout: int = 5
 ) -> Tuple[bool, str]:
@@ -188,6 +191,7 @@ def check_searxng_status(
 # --- End Status Check Functions ---
 
 
+# --- Time Formatting (Unchanged) ---
 def format_relative_time(timestamp_str: Optional[str]) -> str:
     """Converts an ISO timestamp string into a user-friendly relative time string."""
     if not timestamp_str:
@@ -203,7 +207,7 @@ def format_relative_time(timestamp_str: Optional[str]) -> str:
 
         seconds = delta.total_seconds()
         if seconds < 0:
-            return "in future?"  # Should not happen for memories
+            return "in future?"
         elif seconds < 60:
             return "<1 min ago"
         elif seconds < 3600:
@@ -212,20 +216,20 @@ def format_relative_time(timestamp_str: Optional[str]) -> str:
         elif seconds < 86400:
             hours = int(seconds / 3600)
             return f"{hours} hour{'s' if hours > 1 else ''} ago"
-        elif seconds < 172800:  # Less than 2 days
+        elif seconds < 172800:
             if (now.date() - event_time.date()).days == 1:
                 return "yesterday"
             else:
-                return "1 day ago"  # Could be same day if time crosses midnight UTC vs local
-        elif seconds < 604800:  # Less than 7 days
+                return "1 day ago"
+        elif seconds < 604800:
             days = int(seconds / 86400)
             return f"{days} days ago"
-        elif seconds < 1209600:  # Less than 14 days
+        elif seconds < 1209600:
             return "last week"
-        elif seconds < 2592000:  # Approx 30 days
+        elif seconds < 2592000:
             weeks = int(seconds / 604800)
             return f"{weeks} week{'s' if weeks > 1 else ''} ago"
-        elif seconds < 5184000:  # Approx 60 days
+        elif seconds < 5184000:
             return "1 month ago"
         else:
             return ">1 month ago"
@@ -238,44 +242,37 @@ def format_relative_time(timestamp_str: Optional[str]) -> str:
         return "Time Error"
 
 
-# New shared utility functions moved from artifact_reader.py and artifact_writer.py
+# --- File Path Utilities (Updated to use SHARED_ARTIFACT_FOLDER) ---
 def sanitize_and_validate_path(
-    filename: str, base_artifact_path: str
+    filename: str,
+    base_artifact_path: str = SHARED_ARTIFACT_FOLDER,  # Use shared path by default
 ) -> Tuple[bool, str, Optional[str], Optional[str]]:
     """
-    Sanitizes the filename and validates that it points to a path within the artifact workspace.
+    Sanitizes the filename and validates that it points to a path within the SHARED artifact workspace.
     Returns: (is_valid, message, full_path, relative_filename)
     """
     try:
         normalized_filename = os.path.normpath(filename).lstrip(os.sep)
         joined_path = os.path.join(base_artifact_path, normalized_filename)
         normalized_joined_path = os.path.normpath(joined_path)
-        if not normalized_joined_path.startswith(os.path.normpath(base_artifact_path)):
+        # Check against the absolute path of the shared folder
+        abs_base_path = os.path.abspath(base_artifact_path)
+        abs_joined_path = os.path.abspath(normalized_joined_path)
+
+        if not abs_joined_path.startswith(abs_base_path):
+            log.warning(
+                f"Path validation failed: Attempted access outside of designated shared workspace. Target: '{abs_joined_path}', Base: '{abs_base_path}'"
+            )
             return (
                 False,
-                "Path validation failed: Attempted access outside of designated workspace.",
+                "Path validation failed: Attempted access outside of designated shared workspace.",
                 None,
                 None,
             )
-        full_path = os.path.abspath(normalized_joined_path)
+        full_path = abs_joined_path
     except Exception as e:
         log.error(f"Error resolving path for '{filename}': {e}")
         return False, f"Internal error resolving path: {e}", None, None
-
-    normalized_base_path = os.path.normpath(base_artifact_path)
-    if not (
-        full_path.startswith(normalized_base_path + os.sep)
-        or full_path == normalized_base_path
-    ):
-        log.warning(
-            f"Path validation failed: Resolved path '{full_path}' is outside artifact folder '{normalized_base_path}'"
-        )
-        return (
-            False,
-            "Path validation failed: Attempted access outside of designated workspace.",
-            None,
-            None,
-        )
 
     max_path_len = 255
     if len(full_path) > max_path_len:
@@ -287,19 +284,19 @@ def sanitize_and_validate_path(
         )
 
     log.debug(f"Path validated: '{filename}' -> '{full_path}'")
-    relative_path = os.path.relpath(full_path, normalized_base_path)
+    relative_path = os.path.relpath(full_path, abs_base_path)
     relative_path = "." if relative_path == os.curdir else relative_path
     return True, "Path validated successfully.", full_path, relative_path
 
 
 def list_directory_contents(directory_path: str) -> Tuple[bool, List[str]]:
-    """Safely lists contents of a directory within the artifact workspace."""
+    """Safely lists contents of a directory within the SHARED artifact workspace."""
     try:
-        base_artifact_path = os.path.abspath(ARTIFACT_FOLDER)
+        base_artifact_path = os.path.abspath(SHARED_ARTIFACT_FOLDER)  # Use shared path
         abs_directory_path = os.path.abspath(directory_path)
         if not abs_directory_path.startswith(base_artifact_path):
             log.error(
-                f"Security Error: Attempted to list directory outside workspace: {abs_directory_path}"
+                f"Security Error: Attempted to list directory outside shared workspace: {abs_directory_path}"
             )
             return False, []
         if not os.path.isdir(abs_directory_path):
