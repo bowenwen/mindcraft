@@ -42,9 +42,7 @@ class WebTool(Tool):
     'search' (requires 'query'): Uses SearXNG to find information. Returns search results.
     'browse' (requires 'url', optional 'query'):
         - If 'query' is NOT provided: Fetches and parses content (HTML, PDF, JSON, TXT). Returns full (possibly truncated) content.
-        - If 'query' IS provided: Fetches full content, chunks it, stores chunks in the SHARED document archive DB (if not already present),
-          then performs a semantic search on those chunks using the 'query', returning only the most relevant snippets.
-    Note: Browsing may fail on sites with strong bot protection (e.g., Cloudflare).
+        - If 'query' IS provided: Fetches full content, chunks it, stores chunks in the document vector store, then performs a semantic search on those chunks using the 'query' string, returning only the most relevant snippets.
     """
 
     def __init__(self):
@@ -53,11 +51,10 @@ class WebTool(Tool):
             description=(
                 "Performs web actions. Requires 'action' parameter. "
                 "Actions: "
-                "'search' (requires 'query'): Uses SearXNG to find information. Returns search results. "
-                "'browse' (requires 'url', optional 'query'): Fetches and parses content (HTML, PDF, JSON, TXT). "
-                "If 'query' is provided, fetches full content, archives it in the SHARED document DB, and returns only relevant snippets matching the query. "
+                "'search' (requires 'query'): find snippets of information and associated urls. Returns search results. "
+                "'browse' (requires 'url', optional 'query'): Fetches and parses content (HTML, PDF, JSON, TXT) using the url gathered from search. "
+                "If 'query' is provided, fetches full content and returns only relevant snippets matching the query. "
                 "Otherwise, returns the full (potentially truncated) page content. "
-                "Note: Browsing may fail on sites with strong bot protection (e.g., Cloudflare)."
             ),
         )
         # Session for browsing (unchanged)
@@ -695,7 +692,7 @@ class WebTool(Tool):
                 log.info(
                     f"No query provided for {final_url}. Returning full (truncated) content."
                 )
-                limit = config.CONTEXT_TRUNCATION_LIMIT
+                limit = config.CONTEXT_LIMIT_CUMULATIVE_FINDINGS
                 truncated = False
                 message = "Content browsed and parsed successfully."
                 if len(extracted_text) > limit:

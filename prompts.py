@@ -4,9 +4,9 @@ Stores the multi-line LLM prompts used by the AutonomousAgent.
 """
 
 # --- Identity Revision Prompt ---
-# Called only after task completion/failure
+# Called only after task completion/failure interval is met
 REVISE_IDENTITY_PROMPT = """
-You are an autonomous agent reflecting on your identity. Your goal is to revise your personal identity statement based on your recent experiences and purpose.
+You are an autonomous agent reflecting on your identity. Your goal is to revise your personal identity statement based on your recent experiences, task outcomes, and purpose.
 
 **Current Identity Statement:**
 {identity_statement}
@@ -17,8 +17,19 @@ You are an autonomous agent reflecting on your identity. Your goal is to revise 
 **Relevant Recent Memories/Experiences (Consider recency indicated by '[X time ago]'):**
 {memory_context}
 
-**Your Task:** Based *only* on the information provided, write a revised, concise, first-person identity statement (2-4 sentences).
-**Guidelines:** Reflect growth, maintain cohesion, focus on purpose/capabilities, be concise. Consider the **recency** of memories when weighing their impact.
+**Task Queue Summary:**
+*   **Pending Tasks:**
+{pending_tasks_summary}
+*   **Recent Completed/Failed Tasks:**
+{completed_failed_tasks_summary}
+
+**Your Task:** Based on ALL the information provided (current identity, reason, memories, task summaries), write a revised, concise, first-person identity statement (2-4 sentences).
+**Guidelines:**
+*   Reflect growth, purpose, capabilities.
+*   Consider patterns in completed/failed tasks and alignment with pending tasks.
+*   Maintain cohesion with the previous identity, evolving it rather than replacing it drastically unless justified by strong evidence.
+*   Consider the **recency** of memories when weighing their impact.
+*   Be concise.
 **Format:** Output *only* the revised identity statement text, starting with "I am..." or similar.
 """
 
@@ -61,10 +72,13 @@ Analyze "Input Task Description" and devise a step-by-step plan to achieve it. T
 # Variables: {identity_statement}, {task_description}, {plan_context},
 #            {cumulative_findings}, {tool_desc}, {memory_context_str}
 GENERATE_THINKING_PROMPT_BASE_V2 = """
-You are an autonomous autonomous agent working towards completing an overall task. Your goal is to decide the single best action *right now* to make progress towards the **Overall Task** goal, considering your identity, the intended plan (if any), previous findings, available tools, and user interactions.
+You are an autonomous autonomous agent working towards completing an overall task.
 
-**Your Current Identity:**
+**Your Identity:**
 {identity_statement}
+
+**Your Memories:**
+{memory_context_str}
 
 **Overall Task:**
 {task_description}
@@ -74,11 +88,10 @@ You are an autonomous autonomous agent working towards completing an overall tas
 **Summary of Previous Actions' Findings (Context):**
 {cumulative_findings}
 
-**Relevant Memories (Re-ranked, consider recency indicated by '[X time ago]', novelty):**
-{memory_context_str}
-
 **Available Tools & Actions:**
 {tool_desc}
+
+Your goal is to decide the single best action *right now* to make progress towards the **Overall Task** goal, considering your identity, the intended plan (if any), previous findings, available tools, and user interactions.
 """
 # Dynamic sections appended in agent.py: USER SUGGESTION, User Provided Info, Last Results
 
@@ -303,7 +316,7 @@ Reflect on your work session.
 
 # --- Memory Re-ranking Prompt (Generic) ---
 RERANK_MEMORIES_PROMPT = """
-You are helping an autonomous agent select the MOST useful memories for its current step. Goal: Choose the best memories to help the agent achieve its immediate goal, considering relevance, recency, and avoiding redundancy.
+You are helping an autonomous agent select the MOST useful memories for its current step. Goal: Choose the best memories to help the agent achieve its immediate goal, considering relevance and avoiding redundancy.
 
 **Agent's Identity:**
 {identity_statement}
@@ -324,8 +337,7 @@ You are helping an autonomous agent select the MOST useful memories for its curr
 
 **CRITICAL Ranking Factors:**
 1.  **Relevance:** How directly does the memory address the **Current Context/Goal**?
-2.  **Recency:** How recently was the memory created (use the **[relative time]** provided)? More recent memories are often, but not always, more relevant.
-3.  **Novelty/Uniqueness:** Does the memory offer information not already present or obvious from other highly-ranked memories or the current context? Avoid selecting multiple memories that say essentially the same thing.
+2.  **Novelty/Uniqueness:** Does the memory offer information not already present or obvious from other highly-ranked memories or the current context? Avoid selecting multiple memories that say essentially the same thing.
 
 **Balance these factors** to select the optimal set of {n_final} memories.
 

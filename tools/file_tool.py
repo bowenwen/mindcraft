@@ -10,7 +10,7 @@ from .base import Tool
 # Use SHARED paths from config
 from config import (
     SHARED_ARTIFACT_FOLDER,
-    CONTEXT_TRUNCATION_LIMIT,
+    CONTEXT_LIMIT_CUMULATIVE_FINDINGS,
     SHARED_ARCHIVE_FOLDER,
 )
 from utils import sanitize_and_validate_path, list_directory_contents
@@ -95,7 +95,7 @@ class FileTool(Tool):
             log.info(
                 f"Successfully read {len(content)} characters from artifact: {full_path}"
             )
-            limit = CONTEXT_TRUNCATION_LIMIT
+            limit = CONTEXT_LIMIT_CUMULATIVE_FINDINGS
             truncated = False
             message = "Content read successfully."
             if len(content) > limit:

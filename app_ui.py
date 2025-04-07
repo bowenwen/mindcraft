@@ -1585,7 +1585,6 @@ def show_task_details(evt: gr.SelectData, task_list: list) -> str:
 
 # --- Gradio UI Definition ---
 # Add print statement right before defining UI
-print("DEBUG: Attempting to define Gradio UI...", file=original_stderr)
 log.info("Defining Gradio UI...")
 if not initialization_success or not agents:
     log.critical("Agent initialization failed. Cannot define UI.")
@@ -2162,7 +2161,6 @@ if __name__ == "__main__":
             # --- REMOVED .queue() from demo launch ---
             # queue=True is still recommended for event handlers like button clicks
             # but removing it from the main launch might help with startup issues.
-            print("DEBUG: Calling demo.launch()...", file=original_stderr)
             demo.launch(server_name="0.0.0.0", server_port=7860, share=False)
             print(
                 "DEBUG: demo.launch() returned (Gradio server stopped).",
@@ -2289,6 +2287,3 @@ if __name__ == "__main__":
                 except:
                     pass
             sys.exit("Gradio error UI launch failed.")
-
-# Add a final print statement to indicate the script finished executing (if launch doesn't block indefinitely)
-print("DEBUG: Script execution reached end.", file=original_stderr)

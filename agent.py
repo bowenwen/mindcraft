@@ -105,7 +105,7 @@ class AutonomousAgent:
         self._shutdown_request = threading.Event()
         self._agent_thread: Optional[threading.Thread] = None
         # --- USE RLock for reentrant locking ---
-        self._state_lock = threading.RLock()  # <<< MODIFIED
+        self._state_lock = threading.RLock()
 
         # Initialize session state with defaults before loading
         self.session_state = {
@@ -117,6 +117,7 @@ class AutonomousAgent:
             "identity_statement": self.identity_statement,
             "user_suggestion_move_on_pending": False,
             "last_action_details": deque(maxlen=config.UI_STEP_HISTORY_LENGTH),
+            "tasks_since_last_revision": 0,  # <<<--- ADDED state variable
         }
         log.info(f"{self.log_prefix} Loading session state...")
         self.load_session_state()  # Load agent-specific state
@@ -177,10 +178,13 @@ class AutonomousAgent:
             self._ui_update_state["current_action_desc"] = "N/A"
             self._ui_update_state["current_plan"] = "N/A"
 
-    # _revise_identity_statement remains mostly the same, logs agent ID
+    # _revise_identity_statement <<< MODIFIED >>>
     def _revise_identity_statement(self, reason: str):
         log.info(f"{self.log_prefix} Revising identity statement. Reason: {reason}")
-        mem_query = f"Recent task summaries, self-reflections, session reflections, errors, key accomplishments, or notable interactions relevant to understanding my evolution, capabilities, and purpose."
+
+        # --- Gather Context ---
+        # 1. Memories
+        mem_query = f"Recent task summaries, self-reflections, session reflections, errors, key accomplishments, or notable interactions relevant to understanding my evolution, capabilities, and purpose. Focus on the last {config.IDENTITY_REVISION_TASK_INTERVAL} completed/failed tasks."
         log.info(f"{self.log_prefix} Retrieving memories for identity revision...")
         try:
             relevant_memories, _ = self.memory.retrieve_and_rerank_memories(
@@ -211,10 +215,57 @@ class AutonomousAgent:
             if memory_context_list
             else "No specific memories selected for this revision."
         )
+
+        # 2. Task Summaries
+        log.info(
+            f"{self.log_prefix} Retrieving task summaries for identity revision..."
+        )
+        tasks_structured = self.task_queue.get_all_tasks_structured()
+        pending_tasks = tasks_structured.get("pending", [])
+        completed_tasks = tasks_structured.get("completed", [])
+        failed_tasks = tasks_structured.get("failed", [])
+
+        # Format Pending Tasks Summary (Top 5 by priority)
+        pending_summary_list = []
+        for task in pending_tasks[:5]:
+            pending_summary_list.append(
+                f"  - Prio {task.get('Priority', 'N/A')}: {task.get('Description', 'N/A')[:80]}..."
+            )
+        pending_tasks_summary = (
+            "\n".join(pending_summary_list) if pending_summary_list else "  None"
+        )
+
+        # Format Completed/Failed Tasks Summary (Top 10 recent)
+        comp_fail_summary_list = []
+        # Combine and sort by completion/failure time (using completed_at or failed_at)
+        all_finished = sorted(
+            completed_tasks + failed_tasks,
+            key=lambda t: t.get("Completed At")
+            or t.get("Failed At", t.get("Created", "0")),
+            reverse=True,
+        )
+        for task in all_finished[:10]:
+            status = "COMPLETED" if "Completed At" in task else "FAILED"
+            reason_snippet = ""
+            if status == "FAILED":
+                reason = task.get("Reason", "N/A")
+                reason_snippet = f" (Reason: {reason[:50]}...)"
+            comp_fail_summary_list.append(
+                f"  - [{status}] {task.get('Description', 'N/A')[:80]}...{reason_snippet}"
+            )
+        completed_failed_tasks_summary = (
+            "\n".join(comp_fail_summary_list)
+            if comp_fail_summary_list
+            else "  None recently finished."
+        )
+
+        # --- Call LLM for Revision ---
         prompt = prompts.REVISE_IDENTITY_PROMPT.format(
             identity_statement=self.identity_statement,
             reason=reason,
             memory_context=memory_context,
+            pending_tasks_summary=pending_tasks_summary,
+            completed_failed_tasks_summary=completed_failed_tasks_summary,
         )
         log.info(
             f"{self.log_prefix} Asking {self.ollama_chat_model} to revise identity statement..."
@@ -222,6 +273,8 @@ class AutonomousAgent:
         revised_statement_text = call_ollama_api(
             prompt, self.ollama_chat_model, self.ollama_base_url, timeout=150
         )
+
+        # --- Process Revision ---
         if (
             revised_statement_text
             and revised_statement_text.strip()
@@ -234,7 +287,11 @@ class AutonomousAgent:
             log.info(
                 f"{self.log_prefix} Identity statement revised:\nOld: {old_statement}\nNew: {self.identity_statement}"
             )
-            if self._is_running.is_set():
+            # Add memory outside lock, check running state
+            if self._is_running.is_set() or self._ui_update_state.get("status") in [
+                "paused",
+                "idle",
+            ]:
                 try:
                     self.memory.add_memory(
                         f"Identity Statement Updated (Reason: {reason}):\n{self.identity_statement}",
@@ -246,14 +303,18 @@ class AutonomousAgent:
                     )
             else:
                 log.info(
-                    f"{self.log_prefix} Agent paused, skipping memory add for identity revision."
+                    f"{self.log_prefix} Agent not running/paused, skipping memory add for identity revision."
                 )
-            self.save_session_state()
+            self.save_session_state()  # Save state including the new identity
         else:
             log.warning(
                 f"{self.log_prefix} Failed to get a valid revised identity statement from LLM (Response: '{revised_statement_text}'). Keeping current."
             )
-            if self._is_running.is_set():
+            # Add failure memory if running/paused
+            if self._is_running.is_set() or self._ui_update_state.get("status") in [
+                "paused",
+                "idle",
+            ]:
                 try:
                     self.memory.add_memory(
                         f"Identity statement revision failed (Reason: {reason}). LLM response insufficient.",
@@ -263,10 +324,9 @@ class AutonomousAgent:
                     log.error(
                         f"{self.log_prefix} Failed to add identity revision failure memory: {e}"
                     )
-
             else:
                 log.info(
-                    f"{self.log_prefix} Agent paused, skipping memory add for failed identity revision."
+                    f"{self.log_prefix} Agent not running/paused, skipping memory add for failed identity revision."
                 )
 
     # _update_ui_state remains the same
@@ -296,7 +356,7 @@ class AutonomousAgent:
             # Return a copy to prevent modification outside the lock
             return self._ui_update_state.copy()
 
-    # load_session_state uses agent-specific path, logs agent ID
+    # load_session_state uses agent-specific path, logs agent ID <<< MODIFIED >>>
     def load_session_state(self):
         if os.path.exists(self.session_state_path):
             try:
@@ -317,6 +377,9 @@ class AutonomousAgent:
                         "last_action_details",
                         deque(maxlen=config.UI_STEP_HISTORY_LENGTH),
                     )
+                    self.session_state.setdefault(
+                        "tasks_since_last_revision", 0
+                    )  # <<< Default
                     return
 
                 loaded = json.loads(content)
@@ -327,6 +390,9 @@ class AutonomousAgent:
                             f"{self.log_prefix} Loaded session state is for a different agent ('{loaded_agent_id}'). Discarding loaded state."
                         )
                         # Keep initial defaults
+                        self.session_state.setdefault(
+                            "tasks_since_last_revision", 0
+                        )  # <<< Default
                         return
 
                     # Safely update with defaults for missing keys
@@ -335,6 +401,7 @@ class AutonomousAgent:
                         "current_action_retries", loaded.pop("current_task_retries", 0)
                     )
                     loaded.setdefault("user_suggestion_move_on_pending", False)
+                    loaded.setdefault("tasks_since_last_revision", 0)  # <<< Default
                     loaded.pop("investigation_context", None)  # Remove old key
 
                     # Load identity, fallback to initial config if missing/empty
@@ -379,6 +446,9 @@ class AutonomousAgent:
                         f"{self.log_prefix}   User Suggestion Pending: {self.session_state.get('user_suggestion_move_on_pending')}"
                     )
                     log.info(
+                        f"{self.log_prefix}   Tasks Since Last Revision: {self.session_state.get('tasks_since_last_revision', 0)}"
+                    )  # <<< Log loaded value
+                    log.info(
                         f"{self.log_prefix}   Loaded {len(self.session_state['last_action_details'])} action history entries."
                     )
 
@@ -397,6 +467,9 @@ class AutonomousAgent:
                         "last_action_details",
                         deque(maxlen=config.UI_STEP_HISTORY_LENGTH),
                     )
+                    self.session_state.setdefault(
+                        "tasks_since_last_revision", 0
+                    )  # <<< Default
 
             except json.JSONDecodeError as e:
                 log.warning(
@@ -410,6 +483,9 @@ class AutonomousAgent:
                 self.session_state.setdefault(
                     "last_action_details", deque(maxlen=config.UI_STEP_HISTORY_LENGTH)
                 )
+                self.session_state.setdefault(
+                    "tasks_since_last_revision", 0
+                )  # <<< Default
             except Exception as e:
                 log.warning(
                     f"{self.log_prefix} Failed loading session state '{self.session_state_path}': {e}. Using defaults.",
@@ -423,6 +499,9 @@ class AutonomousAgent:
                 self.session_state.setdefault(
                     "last_action_details", deque(maxlen=config.UI_STEP_HISTORY_LENGTH)
                 )
+                self.session_state.setdefault(
+                    "tasks_since_last_revision", 0
+                )  # <<< Default
         else:
             log.info(
                 f"{self.log_prefix} Session state file '{self.session_state_path}' not found. Using defaults."
@@ -433,8 +512,9 @@ class AutonomousAgent:
             self.session_state.setdefault(
                 "last_action_details", deque(maxlen=config.UI_STEP_HISTORY_LENGTH)
             )
+            self.session_state.setdefault("tasks_since_last_revision", 0)  # <<< Default
 
-    # save_session_state uses agent-specific path, logs agent ID
+    # save_session_state uses agent-specific path, logs agent ID <<< MODIFIED >>>
     def save_session_state(self):
         # Save should be relatively quick file IO, but acquire lock for consistency
         with self._state_lock:  # RLock
@@ -444,6 +524,8 @@ class AutonomousAgent:
                 ).isoformat()
                 self.session_state["identity_statement"] = self.identity_statement
                 self.session_state["agent_id"] = self.agent_id
+                # Ensure tasks_since_last_revision is present (redundant if init/load work, but safe)
+                self.session_state.setdefault("tasks_since_last_revision", 0)
                 self.session_state.pop(
                     "investigation_context", None
                 )  # Clean old key if exists
@@ -734,7 +816,7 @@ class AutonomousAgent:
             task.plan = None
             return False
 
-    # generate_thinking remains the same logic, logs agent ID
+    # generate_thinking remains the same (includes detailed tool results)
     def generate_thinking(
         self,
         task: Task,
@@ -850,10 +932,12 @@ class AutonomousAgent:
         if user_provided_info_str:
             prompt_text += f"\n\n**User Provided Information (Consider for next action):**\n{user_provided_info_str}\n"
 
-        # Format last tool results (if any)
+        # --- Format last tool results (if any) ---
         if tool_results:
             tool_name = tool_results.get("tool_name", "Unknown")
             tool_action = tool_results.get("action", "unknown")
+            tool_status = tool_results.get("status", "unknown")
+            tool_error = tool_results.get("error")
             result_payload = tool_results.get("result", {})
             archive_path_info = ""
             if isinstance(result_payload, dict):
@@ -863,65 +947,140 @@ class AutonomousAgent:
                         f"\nNote: Previous version archived to '{archive_path}'"
                     )
 
+            result_context = (
+                f"(Error formatting result for tool: {tool_name}/{tool_action})"
+            )
             try:
-                # Attempt to create a concise, readable context string
-                result_context = ""
-                if tool_results.get("status") == "failed":
-                    result_context = (
-                        f"Error: {tool_results.get('error', 'Unknown failure')}"
+                # Format based on tool and action
+                if tool_status == "failed":
+                    result_context = f"Tool Error: {tool_error or 'Unknown failure'}"
+                elif tool_name == "web":
+                    if tool_action == "search":
+                        results_list = result_payload.get("results", [])
+                        if results_list:
+                            formatted_list = []
+                            for i, res in enumerate(results_list):
+                                title = res.get("title", "No Title")
+                                snippet = res.get("snippet", "...")
+                                url = res.get("url", "N/A")
+                                formatted_list.append(
+                                    f"{i+1}. {title}\n   URL: {url}\n   Snippet: {snippet}"
+                                )
+                            result_context = "\n".join(formatted_list)
+                        else:
+                            result_context = (
+                                result_payload.get("message") or "No search results."
+                            )
+                    elif tool_action == "browse":
+                        if result_payload.get("query_mode"):
+                            snippets = result_payload.get("retrieved_snippets", [])
+                            query_used = result_payload.get("query", "N/A")
+                            url_browsed = result_payload.get("url", "N/A")
+                            if snippets:
+                                formatted_list = [
+                                    f"Snippet {i+1} (Index: {s.get('chunk_index', 'N/A')}, Dist: {s.get('distance', 'N/A')}) for query '{query_used}':\n{s.get('content', 'N/A')}"
+                                    for i, s in enumerate(snippets)
+                                ]
+                                result_context = (
+                                    f"Focused Browse on {url_browsed}:\n"
+                                    + "\n---\n".join(formatted_list)
+                                )
+                            else:
+                                result_context = f"Focused Browse on {url_browsed}: No relevant snippets found for query '{query_used}'."
+                        else:
+                            url_browsed = result_payload.get("url", "N/A")
+                            content = result_payload.get("content")
+                            source = result_payload.get("content_source", "?")
+                            truncated = result_payload.get("truncated", False)
+                            result_context = (
+                                f"Full Browse of {url_browsed} (Source: {source}):\n"
+                            )
+                            result_context += (
+                                content if content else "(No content extracted)"
+                            )
+                            if truncated:
+                                result_context += "\n[Note: Content was truncated]"
+                elif tool_name == "memory":
+                    if tool_action == "search":
+                        memories_list = result_payload.get("retrieved_memories", [])
+                        if memories_list:
+                            formatted_list = []
+                            for mem in memories_list:
+                                rank = mem.get("rank", "-")
+                                rel_time = mem.get("relative_time", "N/A")
+                                mem_type = mem.get("type", "N/A")
+                                dist = mem.get("distance", "N/A")
+                                snippet = mem.get("content_snippet", "...")
+                                formatted_list.append(
+                                    f"Rank {rank} ({rel_time}) - Type: {mem_type}, Dist: {dist}\n   Snippet: {snippet}"
+                                )
+                            result_context = "\n".join(formatted_list)
+                        else:
+                            result_context = (
+                                result_payload.get("message") or "No memories found."
+                            )
+                    elif tool_action == "write":
+                        result_context = result_payload.get(
+                            "message", "Memory write completed."
+                        )
+                elif tool_name == "file":
+                    if tool_action == "list":
+                        dir_path = result_payload.get("directory_path", ".")
+                        files = result_payload.get("files", [])
+                        dirs = result_payload.get("directories", [])
+                        result_context = f"Directory Listing for '{dir_path}':\nFiles ({len(files)}): {files}\nDirectories ({len(dirs)}): {dirs}"
+                    elif tool_action == "read":
+                        file_path = result_payload.get("filepath", "N/A")
+                        content = result_payload.get("content")
+                        truncated = result_payload.get("truncated", False)
+                        result_context = f"Read file '{file_path}':\n"
+                        result_context += (
+                            content if content else "(No content or file empty)"
+                        )
+                        if truncated:
+                            result_context += "\n[Note: Content was truncated]"
+                    elif tool_action == "write":
+                        file_path = result_payload.get("filepath", "N/A")
+                        archived = result_payload.get("archived_filepath")
+                        result_context = f"Wrote file '{file_path}'." + (
+                            f" Archived previous version." if archived else ""
+                        )
+                elif tool_name == "status":
+                    result_context = result_payload.get(
+                        "report_content", "(Status report content missing)"
                     )
-                elif isinstance(result_payload, dict):
-                    # Prioritize message if available
-                    if "message" in result_payload:
+                else:  # Fallback for unknown tools or other results
+                    if isinstance(result_payload, dict) and result_payload.get(
+                        "message"
+                    ):
+                        # Use message if available and specific formatting didn't catch it
                         result_context = result_payload["message"]
-                    # Specific formats for common tools
-                    elif (
-                        tool_name == "file"
-                        and tool_action == "list"
-                        and "files" in result_payload
-                    ):
-                        result_context = f"Listed dir '{result_payload.get('directory_path', '?')}': {len(result_payload.get('files',[]))} files, {len(result_payload.get('directories',[]))} dirs."
-                    elif (
-                        tool_name == "web"
-                        and tool_action == "search"
-                        and "results" in result_payload
-                    ):
-                        result_context = (
-                            f"Found {len(result_payload['results'])} search results."
-                        )
-                    elif (
-                        tool_name == "web"
-                        and tool_action == "browse"
-                        and result_payload.get("query_mode")
-                    ):
-                        result_context = f"Focused browse: Found {len(result_payload.get('retrieved_snippets',[]))} snippets for query '{result_payload.get('query','?')}'."
-                    elif "content" in result_payload:  # Generic content
-                        content_str = str(result_payload["content"])
-                        result_context = content_str[:300] + (
-                            "..." if len(content_str) > 300 else ""
-                        )
-                    else:  # Fallback to JSON dump for unknown dict structures
+                    elif isinstance(result_payload, dict):
+                        # Dump other dictionaries nicely
                         result_context = json.dumps(
-                            result_payload, indent=None, ensure_ascii=False
+                            result_payload, indent=2, ensure_ascii=False
                         )
+                    else:
+                        result_context = str(result_payload)
 
-                else:  # Non-dict result payload
-                    result_context = str(result_payload)
-
-                # Limit overall length
-                max_len = 1000
+                # Apply truncation to the formatted result
+                max_len = config.CONTEXT_LIMIT_TOOL_RESULTS  # Use config limit
                 if len(result_context) > max_len:
                     result_context = result_context[:max_len] + "..."
 
-                prompt_text += f"\n**Results from Last Action:**\nTool: {tool_name} (Action: {tool_action})\nStatus: {tool_results.get('status', 'unknown')}\nResult Summary:\n```text\n{result_context}\n```{archive_path_info}\n"
+                prompt_text += f"\n**Results from Last Action:**\nTool: {tool_name} (Action: {tool_action})\nStatus: {tool_status}\nResult Summary:\n```text\n{result_context}\n```{archive_path_info}\n"
 
             except Exception as fmt_err:
                 log.warning(
-                    f"{self.log_prefix} Failed to format tool result for prompt: {fmt_err}"
+                    f"{self.log_prefix} Failed to format detailed tool result for prompt: {fmt_err}",
+                    exc_info=True,
                 )
-                prompt_text += f"\n**Results from Last Action:**\nTool: {tool_name} (Action: {tool_action})\nStatus: {tool_results.get('status', 'unknown')}\nResult: (Error formatting details)\n"
+                # Fallback to basic status/error info if detailed formatting fails
+                error_info = f", Error: {tool_error}" if tool_error else ""
+                prompt_text += f"\n**Results from Last Action:**\nTool: {tool_name} (Action: {tool_action})\nStatus: {tool_status}{error_info}\nResult: (Error formatting details)\n"
         else:
             prompt_text += "\n**Results from Last Action:**\nNone.\n"
+        # --- End Tool Result Formatting ---
 
         prompt_text += prompts.GENERATE_THINKING_TASK_NOW_PROMPT_V2.format(
             task_reattempt_count=task.reattempt_count + 1
@@ -1578,7 +1737,9 @@ class AutonomousAgent:
             f"{self.log_prefix} Summarizing memories and findings for {task.status} task {task.id[:8]}..."
         )
         final_summary_text = "No cumulative findings recorded for this task."
-        trunc_limit = config.CONTEXT_TRUNCATION_LIMIT  # Use config for truncation
+        trunc_limit = (
+            config.CONTEXT_LIMIT_CUMULATIVE_FINDINGS
+        )  # Use config for truncation
 
         if task.cumulative_findings and task.cumulative_findings.strip():
             findings_to_summarize = task.cumulative_findings
@@ -2399,9 +2560,8 @@ class AutonomousAgent:
             # Fetch the final task object state from the queue for completion handling
             final_task_obj = self.task_queue.get_task(task.id)
             if final_task_obj:
-                self._handle_task_completion_or_failure(
-                    final_task_obj
-                )  # Calls identity revision
+                # Handle completion/failure (increments counter, potentially revises identity)
+                self._handle_task_completion_or_failure(final_task_obj)
             else:
                 log.error(
                     f"{self.log_prefix} Could not retrieve final task object for {task.id[:8]} after completion/failure."
@@ -2422,7 +2582,7 @@ class AutonomousAgent:
             # Task ID remains, retries reset earlier
             pass
 
-        # Save session state changes (retries, current task ID, etc.)
+        # Save session state changes (retries, current task ID, revision counter etc.)
         self.save_session_state()
 
         # --- Prepare UI Update Data ---
@@ -2482,24 +2642,59 @@ class AutonomousAgent:
         # Return the latest full UI state for this agent
         return self.get_ui_update_state()
 
-    # _handle_task_completion_or_failure calls identity revision, logs agent ID
+    # _handle_task_completion_or_failure <<< MODIFIED >>>
     def _handle_task_completion_or_failure(self, task: Task):
+        """Handles post-task actions: increments counter, triggers identity revision if interval met."""
         log.info(
             f"{self.log_prefix} Handling completion/failure for task {task.id[:8]} (Status: {task.status})"
         )
-        # Check if agent is running *before* potentially long revision call
-        if self._is_running.is_set():
-            try:
-                reason = f"{task.status.capitalize()} Task: {task.description[:50]}..."
-                self._revise_identity_statement(reason)
-            except Exception as e:
-                log.error(
-                    f"{self.log_prefix} Error during identity revision after task {task.id[:8]}: {e}",
-                    exc_info=True,
+
+        # Check if agent is running or paused *before* potentially long revision call
+        should_attempt_revision = False
+        if self._is_running.is_set() or self._ui_update_state.get("status") in [
+            "paused",
+            "idle",
+        ]:
+            # Increment task counter and check if revision interval is met
+            with self._state_lock:
+                tasks_completed = self.session_state.get("tasks_since_last_revision", 0)
+                tasks_completed += 1
+                self.session_state["tasks_since_last_revision"] = tasks_completed
+                log.info(
+                    f"{self.log_prefix} Task {task.status}. Tasks since last revision: {tasks_completed}/{config.IDENTITY_REVISION_TASK_INTERVAL}"
                 )
+
+                if (
+                    tasks_completed >= config.IDENTITY_REVISION_TASK_INTERVAL
+                    and config.IDENTITY_REVISION_TASK_INTERVAL > 0
+                ):
+                    log.info(
+                        f"{self.log_prefix} Identity revision interval ({config.IDENTITY_REVISION_TASK_INTERVAL} tasks) reached. Triggering revision."
+                    )
+                    should_attempt_revision = True
+                    self.session_state["tasks_since_last_revision"] = 0  # Reset counter
+                else:
+                    log.info(
+                        f"{self.log_prefix} Identity revision interval not met. Skipping revision."
+                    )
+
+            # Save the updated counter state immediately
+            self.save_session_state()
+
+            # Attempt revision outside the lock if the flag was set
+            if should_attempt_revision:
+                try:
+                    reason = f"After completing/failing {config.IDENTITY_REVISION_TASK_INTERVAL} tasks (last: {task.status.capitalize()} task {task.id[:8]} - {task.description[:50]}...). Reflecting on recent performance and goals."
+                    self._revise_identity_statement(reason)
+                except Exception as e:
+                    log.error(
+                        f"{self.log_prefix} Error during scheduled identity revision after task {task.id[:8]}: {e}",
+                        exc_info=True,
+                    )
+                    # Optionally, try to re-increment counter if revision failed? Risky.
         else:
             log.info(
-                f"{self.log_prefix} Agent paused, skipping identity revision after {task.status} task."
+                f"{self.log_prefix} Agent paused or shutting down, skipping identity revision check after {task.status} task."
             )
 
     # process_one_step remains the same logic, logs agent ID
