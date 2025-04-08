@@ -2472,7 +2472,7 @@ class AutonomousAgent:
                 )
 
                 log.info(
-                    +f" FINAL ANSWER (Agent: {self.agent_id}, Task: {task.id[:8]}) "
+                    f" FINAL ANSWER (Agent: {self.agent_id}, Task: {task.id[:8]}) "
                     + f"\n{answer}\n"
                 )  # Adjusted separator length
 
