@@ -689,21 +689,18 @@ class WebTool(Tool):
                 }
 
             else:  # No query provided
-                log.info(
-                    f"No query provided for {final_url}. Returning full (truncated) content."
-                )
-                limit = config.CONTEXT_LIMIT_CUMULATIVE_FINDINGS
+                limit = config.MAX_CHARACTERS_CUMULATIVE_FINDINGS
                 truncated = False
-                message = "Content browsed and parsed successfully."
+                message = "Content browsed successfully."
                 if len(extracted_text) > limit:
                     log.info(
-                        f"Content from {final_url} truncated from {len(extracted_text)} to {limit} characters."
+                        f"Truncated Content from {final_url} returned. {len(extracted_text)} characters truncated to {limit}."
                     )
-                    extracted_text = (
-                        extracted_text[:limit] + "\n\n... [CONTENT TRUNCATED]"
-                    )
+                    extracted_text = extracted_text[:limit] + "\n\n..."
                     truncated = True
-                    message = f"Content browsed successfully but was truncated to approximately {limit} characters."
+                    message = f"Content browsed successfully and returned first {limit} characters."
+                else:
+                    log.info(f"Full content from {final_url} returned.")
                 result = {
                     "status": "success",
                     "action": "browse",

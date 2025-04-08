@@ -10,7 +10,7 @@ from .base import Tool
 # Use SHARED paths from config
 from config import (
     SHARED_ARTIFACT_FOLDER,
-    CONTEXT_LIMIT_CUMULATIVE_FINDINGS,
+    MAX_CHARACTERS_CUMULATIVE_FINDINGS,
     SHARED_ARCHIVE_FOLDER,
 )
 from utils import sanitize_and_validate_path, list_directory_contents
@@ -34,8 +34,8 @@ class FileTool(Tool):
                 "Performs file operations within the SHARED agent workspace. Use subdirectories for organization, by project and content category (e.g., 'proj_xxx/summaries/report.txt', 'proj_xxx/code/script.py'). Requires 'action' parameter. "
                 "Actions: "
                 "'read' (requires 'filename'): Reads text content from a file (use subdirs). Returns content or error with directory listing if not found. "
-                "'write' (requires 'filename', 'content'): Writes text content to a file (use subdirs). Creates directories if needed. **Automatically archives the previous version if the file exists.** Returns success status and paths. "
-                "'list' (optional 'directory'): Lists files/folders in the specified directory (defaults to workspace root). Returns list or error."
+                "'write' (requires 'filename', 'content'): Writes text content to a file (use subdirs). Returns success status and paths. "
+                "'list' (optional 'directory'): Lists files/folders in the specified directory (defaults to workspace root). Returns list of paths."
             ),
         )
         # Use shared paths directly from config
@@ -95,23 +95,20 @@ class FileTool(Tool):
             log.info(
                 f"Successfully read {len(content)} characters from artifact: {full_path}"
             )
-            limit = CONTEXT_LIMIT_CUMULATIVE_FINDINGS
-            truncated = False
+            limit = MAX_CHARACTERS_CUMULATIVE_FINDINGS
             message = "Content read successfully."
             if len(content) > limit:
                 log.info(
                     f"Content from {full_path} truncated from {len(content)} to {limit} characters."
                 )
-                content = content[:limit] + "\n\n... [CONTENT TRUNCATED]"
-                truncated = True
-                message = f"Content read successfully but was truncated to approximately {limit} characters."
+                content = content[:limit] + "\n\n..."
+                message = f"Content read successfully but was truncated to {limit} characters."
             return {
                 "status": "success",
+                "message": message,
                 "action": "read",
                 "filepath": rel_filename,
                 "content": content,
-                "message": message,
-                "truncated": truncated,
             }
         except IOError as e:
             log.error(f"IOError reading artifact '{full_path}': {e}", exc_info=True)
@@ -156,6 +153,7 @@ class FileTool(Tool):
         log.info(f"Attempting to write artifact to: {full_path}")
         archived_filepath_rel = None
         archive_message = ""
+        archive_success = False
         try:
             target_directory = os.path.dirname(full_path)
             if not os.path.exists(target_directory):
@@ -198,6 +196,7 @@ class FileTool(Tool):
                         archive_message = (
                             f" Previous version archived."  # Keep UI msg simpler
                         )
+                        archive_success = True
                     except Exception as archive_err:
                         log.exception(
                             f"Failed to archive existing file '{full_path}': {archive_err}"
@@ -213,18 +212,26 @@ class FileTool(Tool):
                         "error": f"Cannot write: Path '{rel_filename}' exists but is a directory, not a file."
                     }
 
-            with open(full_path, "w", encoding="utf-8") as f:
+            with open(full_path, "a", encoding="utf-8") as f:
                 f.write(content)
             log.info(
                 f"Successfully wrote {len(content)} characters to artifact: {full_path}"
             )
-            return {
-                "status": "success_archived" if archived_filepath_rel else "success",
-                "action": "write",
-                "filepath": rel_filename,
-                "archived_filepath": archived_filepath_rel,
-                "message": f"Content written successfully to '{rel_filename}'.{archive_message}",
-            }
+            if archive_success == True:
+                return {
+                    "status": "success",
+                    "action": "write",
+                    "message": f"Content written successfully to '{rel_filename}'.{archive_message}",
+                    "archived_filepath": archived_filepath_rel,
+                    "filepath": rel_filename,
+                }
+            else:
+                return {
+                    "status": "success",
+                    "action": "write",
+                    "message": f"Content written successfully to '{rel_filename}'.",
+                    "filepath": rel_filename,
+                }
         except IOError as e:
             log.error(f"IOError writing artifact '{full_path}': {e}", exc_info=True)
             return {"error": f"File system error writing artifact: {e}"}

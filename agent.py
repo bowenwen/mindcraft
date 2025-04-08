@@ -990,16 +990,14 @@ class AutonomousAgent:
                         else:
                             url_browsed = result_payload.get("url", "N/A")
                             content = result_payload.get("content")
-                            source = result_payload.get("content_source", "?")
+                            # source = result_payload.get("content_source", "internet")
                             truncated = result_payload.get("truncated", False)
-                            result_context = (
-                                f"Full Browse of {url_browsed} (Source: {source}):\n"
-                            )
+                            result_context = f"Browse on {url_browsed}:\n"
                             result_context += (
                                 content if content else "(No content extracted)"
                             )
                             if truncated:
-                                result_context += "\n[Note: Content was truncated]"
+                                result_context += "...\n"  # use ... to indicate that content was truncated
                 elif tool_name == "memory":
                     if tool_action == "search":
                         memories_list = result_payload.get("retrieved_memories", [])
@@ -1038,7 +1036,7 @@ class AutonomousAgent:
                             content if content else "(No content or file empty)"
                         )
                         if truncated:
-                            result_context += "\n[Note: Content was truncated]"
+                            result_context += "...\n"  # use ... to indicate that content was truncated
                     elif tool_action == "write":
                         file_path = result_payload.get("filepath", "N/A")
                         archived = result_payload.get("archived_filepath")
@@ -1064,9 +1062,11 @@ class AutonomousAgent:
                         result_context = str(result_payload)
 
                 # Apply truncation to the formatted result
-                max_len = config.CONTEXT_LIMIT_TOOL_RESULTS  # Use config limit
+                max_len = config.MAX_CHARACTERS_TOOL_RESULTS  # Use config limit
                 if len(result_context) > max_len:
-                    result_context = result_context[:max_len] + "..."
+                    result_context = (
+                        result_context[:max_len] + "..."
+                    )  # use ... to indicate that content was truncated
 
                 prompt_text += f"\n**Results from Last Action:**\nTool: {tool_name} (Action: {tool_action})\nStatus: {tool_status}\nResult Summary:\n```text\n{result_context}\n```{archive_path_info}\n"
 
@@ -1738,7 +1738,7 @@ class AutonomousAgent:
         )
         final_summary_text = "No cumulative findings recorded for this task."
         trunc_limit = (
-            config.CONTEXT_LIMIT_CUMULATIVE_FINDINGS
+            config.MAX_CHARACTERS_CUMULATIVE_FINDINGS
         )  # Use config for truncation
 
         if task.cumulative_findings and task.cumulative_findings.strip():
@@ -1749,8 +1749,8 @@ class AutonomousAgent:
                 )
                 # Truncate from the beginning to keep recent info
                 findings_to_summarize = (
-                    "... [TRUNCATED]\n" + findings_to_summarize[-trunc_limit:]
-                )
+                    "...\n" + findings_to_summarize[-trunc_limit:]
+                )  # use ... to indicate that content was truncated
 
             summary_prompt = prompts.SUMMARIZE_TASK_PROMPT.format(
                 task_status=task.status,
@@ -2186,7 +2186,12 @@ class AutonomousAgent:
 
             # --- Generate Result Summary for History and Findings ---
             result_display_str = "(Error summarizing result)"
-            summary_limit = 500  # Limit summary length in history/findings
+            summary_limit = (
+                config.MAX_CHARACTER_SUMMARY
+            )  # Limit summary length in history/findings
+            content_result_limit = (
+                config.MAX_TOOL_CONTENT_RESULTS
+            )  # Limit content results from tool use, should be less than summary_limit
             try:
                 if isinstance(result_content, dict):
                     if "message" in result_content:
@@ -2227,8 +2232,8 @@ class AutonomousAgent:
                         and "content" in result_content
                     ):
                         trunc_info = (
-                            "(truncated)" if result_content.get("truncated") else ""
-                        )
+                            "..." if result_content.get("truncated") else ""
+                        )  # use ... to indicate that content was truncated
                         result_display_str = f"Browsed '{result_content.get('url','?')}': Content ({result_content.get('content_source', '?')}) length {len(result_content['content'])} {trunc_info}"
                     elif (
                         tool_name == "memory"
@@ -2240,8 +2245,8 @@ class AutonomousAgent:
                         result_display_str = "Generated status report."
                     elif "content" in result_content:  # Generic content display
                         content_str = str(result_content["content"])
-                        result_display_str = content_str[:300] + (
-                            "..." if len(content_str) > 300 else ""
+                        result_display_str = content_str[:content_result_limit] + (
+                            "..." if len(content_str) > content_result_limit else ""
                         )
                     else:  # Fallback for other dict structures
                         result_display_str = json.dumps(
@@ -2252,9 +2257,11 @@ class AutonomousAgent:
 
                 # Apply length limit
                 if (
-                    len(result_display_str) > 1000
+                    len(result_display_str) > content_result_limit
                 ):  # Generous limit for internal log/findings
-                    result_display_str = result_display_str[:1000] + "..."
+                    result_display_str = (
+                        result_display_str[:content_result_limit] + "..."
+                    )
 
             except Exception as summ_e:
                 log.warning(
@@ -2282,8 +2289,12 @@ class AutonomousAgent:
 
             # Add tool result memory
             try:
-                mem_params_summary = json.dumps(params)[:500] + (
-                    "..." if len(json.dumps(params)) > 500 else ""
+                mem_params_summary = json.dumps(params)[
+                    : config.MAX_MEMORY_PARAMS_SNIPPETS
+                ] + (
+                    "..."
+                    if len(json.dumps(params)) > config.MAX_MEMORY_PARAMS_SNIPPETS
+                    else ""
                 )
                 self.memory.add_memory(
                     f"Action Cycle {cycle_num_display} Tool Result (Status: {tool_status}, Attempt {task.reattempt_count+1}):\nAction: {tool_name}/{tool_action_from_result}\nParams: {mem_params_summary}\nSummary: {result_summary_for_history}",
@@ -2296,7 +2307,7 @@ class AutonomousAgent:
                         "result_status": tool_status,
                         "params_snippet": mem_params_summary,
                         "result_summary_snippet": result_summary_for_history[
-                            :200
+                            : config.MAX_MEMORY_SUMMARY_SNIPPETS
                         ],  # Add snippet to metadata
                         "task_attempt": task.reattempt_count + 1,
                     },
@@ -2460,14 +2471,9 @@ class AutonomousAgent:
                     + ("..." if len(answer) > summary_limit else "")
                 )
 
-                print(
-                    "\n"
-                    + "=" * 15
-                    + f" FINAL ANSWER (Agent: {self.agent_id}, Task: {task.id[:8]}) "
-                    + "=" * 15
+                log.info(
+                    +f" FINAL ANSWER (Agent: {self.agent_id}, Task: {task.id[:8]}) "
                     + f"\n{answer}\n"
-                    + "=" * (34 + len(self.agent_id) + len(task.id[:8]))
-                    + "\n"
                 )  # Adjusted separator length
 
                 cycle_finding = f"\n--- Action Cycle {cycle_num_display}: Final Answer Provided (Attempt {task.reattempt_count+1}) ---\n{answer[:500]}...\n---\n"

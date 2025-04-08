@@ -15,11 +15,17 @@ from chromadb.utils.embedding_functions import OllamaEmbeddingFunction
 from config import (
     OLLAMA_BASE_URL,
     OLLAMA_TIMEOUT,
+    OLLAMA_CHAT_MODEL,
+    OLLAMA_CHAT_MODEL_REPEAT_PENALTY,
+    OLLAMA_CHAT_MODEL_TEMPERATURE,
+    OLLAMA_CHAT_MODEL_TOP_K,
+    OLLAMA_CHAT_MODEL_TOP_P,
+    OLLAMA_CHAT_MODEL_MIN_P,
     MODEL_CONTEXT_LENGTH,
-    SHARED_ARTIFACT_FOLDER,  # <<<--- Use shared folder
+    SHARED_ARTIFACT_FOLDER,
     SEARXNG_BASE_URL,
     SEARXNG_TIMEOUT,
-    SHARED_DOC_ARCHIVE_DB_PATH,  # <<<--- Use shared path
+    SHARED_DOC_ARCHIVE_DB_PATH,
     DOC_ARCHIVE_COLLECTION_NAME,
     OLLAMA_EMBED_MODEL,
 )
@@ -34,7 +40,7 @@ log = logging.getLogger(__name__)
 
 def call_ollama_api(
     prompt: str,
-    model: str,
+    model: str = OLLAMA_CHAT_MODEL,
     base_url: str = OLLAMA_BASE_URL,
     timeout: int = OLLAMA_TIMEOUT,
 ) -> Optional[str]:
@@ -44,7 +50,14 @@ def call_ollama_api(
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "stream": False,
-        "options": {"temperature": 0.8, "num_ctx": MODEL_CONTEXT_LENGTH},
+        "options": {
+            "num_ctx": MODEL_CONTEXT_LENGTH,
+            "repeat_penalty": OLLAMA_CHAT_MODEL_REPEAT_PENALTY,
+            "temperature": OLLAMA_CHAT_MODEL_TEMPERATURE,
+            "top_k": OLLAMA_CHAT_MODEL_TOP_K,
+            "top_p": OLLAMA_CHAT_MODEL_TOP_P,
+            "min_p": OLLAMA_CHAT_MODEL_MIN_P,
+        },
     }
     headers = {"Content-Type": "application/json"}
     max_retries = 1
@@ -58,6 +71,15 @@ def call_ollama_api(
             response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
             response_data = response.json()
             if "message" in response_data and "content" in response_data["message"]:
+                input_tokens = response_data["prompt_eval_count"]
+                input_tps = round(
+                    input_tokens / response_data["prompt_eval_duration"] * 1e9, 1
+                )
+                resp_tokens = response_data["eval_count"]
+                resp_tps = round(resp_tokens / response_data["eval_duration"] * 1e9, 1)
+                log.info(
+                    f"Ollama call successful: Input token count {input_tokens} ({input_tps} tps); Generated token count {resp_tokens} ({resp_tps} tps)..."
+                )
                 return response_data["message"]["content"]
             elif "error" in response_data:
                 log.error(f"Error from Ollama API ({model}): {response_data['error']}")
@@ -157,7 +179,7 @@ def check_ollama_status(
 
 
 def check_searxng_status(
-    base_url: str = SEARXNG_BASE_URL, timeout: int = 5
+    base_url: str = SEARXNG_BASE_URL, timeout: int = SEARXNG_TIMEOUT
 ) -> Tuple[bool, str]:
     """Checks if the SearXNG instance is reachable."""
     if not base_url:

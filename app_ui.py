@@ -510,6 +510,29 @@ def format_other_tool_results(results_data: Optional[Dict[str, Any]]) -> str:
     return "\n".join(output)
 
 
+def format_display_df(data, columns):
+    if not isinstance(data, list) or (
+        data and not all(isinstance(item, dict) for item in data)
+    ):
+        log.warning(
+            f"Invalid data type passed to format_display_df: {type(data)}. Expected list of dicts."
+        )
+        return pd.DataFrame(columns=columns)
+    if not data:
+        return pd.DataFrame(columns=columns)
+    try:
+        df = pd.DataFrame(data)
+        # Ensure all expected columns exist, fill with NA if missing
+        for col in columns:
+            if col not in df.columns:
+                df[col] = pd.NA  # Use pandas NA
+        # Reindex to ensure correct column order and fill missing values
+        return df.reindex(columns=columns, fill_value=pd.NA)
+    except Exception as df_err:
+        log.error(f"Error creating DataFrame: {df_err}. Data sample: {str(data)[:200]}")
+        return pd.DataFrame(columns=columns)
+
+
 # --- Agent Control Functions ---
 
 
@@ -1395,30 +1418,6 @@ def refresh_agent_state_display():
         agent = agents[active_agent_id]
         state_data = agent.get_agent_dashboard_state()
 
-        def create_or_default_df(data, columns):
-            if not isinstance(data, list) or (
-                data and not all(isinstance(item, dict) for item in data)
-            ):
-                log.warning(
-                    f"Invalid data type passed to create_or_default_df: {type(data)}. Expected list of dicts."
-                )
-                return pd.DataFrame(columns=columns)
-            if not data:
-                return pd.DataFrame(columns=columns)
-            try:
-                df = pd.DataFrame(data)
-                # Ensure all expected columns exist, fill with NA if missing
-                for col in columns:
-                    if col not in df.columns:
-                        df[col] = pd.NA  # Use pandas NA
-                # Reindex to ensure correct column order and fill missing values
-                return df.reindex(columns=columns, fill_value=pd.NA)
-            except Exception as df_err:
-                log.error(
-                    f"Error creating DataFrame: {df_err}. Data sample: {str(data)[:200]}"
-                )
-                return pd.DataFrame(columns=columns)
-
         pending_cols = ["ID", "Priority", "Description", "Depends On", "Created"]
         inprogress_cols = ["ID", "Priority", "Description", "Status", "Created"]
         completed_cols = ["ID", "Description", "Completed At", "Result Snippet"]
@@ -1428,10 +1427,10 @@ def refresh_agent_state_display():
         inprogress_raw = state_data.get("in_progress_tasks", [])
         completed_raw = state_data.get("completed_tasks", [])
         failed_raw = state_data.get("failed_tasks", [])
-        pending_df = create_or_default_df(pending_raw, pending_cols)
-        inprogress_df = create_or_default_df(inprogress_raw, inprogress_cols)
-        completed_df = create_or_default_df(completed_raw, completed_cols)
-        failed_df = create_or_default_df(failed_raw, failed_cols)
+        pending_df = format_display_df(pending_raw, pending_cols)
+        inprogress_df = format_display_df(inprogress_raw, inprogress_cols)
+        completed_df = format_display_df(completed_raw, completed_cols)
+        failed_df = format_display_df(failed_raw, failed_cols)
         completed_failed_tasks_data = state_data.get("completed_failed_tasks_data", [])
         task_id_choices_tuples = [
             (f"{t['ID'][:8]} - {t['Description'][:50]}...", t["ID"])
@@ -1443,7 +1442,7 @@ def refresh_agent_state_display():
         general_memories = agent.get_formatted_general_memories()
         for mem in general_memories:
             mem["Relative Time"] = format_relative_time(mem.get("Timestamp"))
-        general_mem_df = create_or_default_df(general_memories, memory_cols)
+        general_mem_df = format_display_df(general_memories, memory_cols)
         return (
             state_data.get("identity_statement", "Error loading identity"),
             pending_df,
@@ -1505,8 +1504,8 @@ def update_task_memory_display(selected_task_id: str):
         memories = agent.get_formatted_memories_for_task(selected_task_id)
         for mem in memories:
             mem["Relative Time"] = format_relative_time(mem.get("Timestamp"))
-        # Use create_or_default_df for consistency
-        mem_df = create_or_default_df(memories, columns)
+        # Use format_display_df for consistency
+        mem_df = format_display_df(memories, columns)
         if not mem_df.empty and "Timestamp" in mem_df.columns:
             # Ensure Timestamp is datetime for sorting, coercing errors
             mem_df["Timestamp"] = pd.to_datetime(mem_df["Timestamp"], errors="coerce")
@@ -1535,8 +1534,8 @@ def update_general_memory_display():
         memories = agent.get_formatted_general_memories()
         for mem in memories:
             mem["Relative Time"] = format_relative_time(mem.get("Timestamp"))
-        # Use create_or_default_df for consistency
-        mem_df = create_or_default_df(memories, columns)
+        # Use format_display_df for consistency
+        mem_df = format_display_df(memories, columns)
         if not mem_df.empty and "Timestamp" in mem_df.columns:
             # Ensure Timestamp is datetime for sorting, coercing errors
             mem_df["Timestamp"] = pd.to_datetime(mem_df["Timestamp"], errors="coerce")
@@ -1605,7 +1604,9 @@ else:
         for agent_id, agent_config in config.AGENTS.items()
     ]
 
-    with gr.Blocks(theme=gr.themes.Glass(), title="Multi-Agent Control Center", fill_width=True) as demo:
+    with gr.Blocks(
+        theme=gr.themes.Glass(), title="Multi-Agent Control Center", fill_width=True
+    ) as demo:
         gr.Markdown("# Multi-Agent Control Center & Chat")
 
         # UI State Variables (will hold data for the *active* agent)
@@ -1662,6 +1663,16 @@ else:
         with gr.Tabs():
             # --- Monitor Tab ---
             with gr.TabItem("Agent Monitor"):
+                with gr.Accordion("Console Log", open=True):
+                    monitor_log = gr.Textbox(
+                        label="🪵 Console Log",
+                        value=initial_console_log_text,
+                        lines=20,  # Increased lines
+                        max_lines=20,  # Increased max_lines
+                        autoscroll=True,
+                        interactive=False,
+                        show_copy_button=True,
+                    )
                 with gr.Accordion("Current Task & State", open=True):
                     with gr.Row():
                         with gr.Column(scale=1):
@@ -1719,16 +1730,6 @@ else:
                                 ),  # Start empty
                                 label="🧠 Recent/Relevant Memories",  # Renamed label slightly
                             )
-                with gr.Accordion("Console Log", open=False):
-                    monitor_log = gr.Textbox(
-                        label="🪵 Console Log",
-                        value=initial_console_log_text,
-                        lines=10,  # Increased lines
-                        max_lines=15,  # Increased max_lines
-                        autoscroll=True,
-                        interactive=False,
-                        show_copy_button=True,
-                    )
                 with gr.Accordion("Action History", open=False):
                     with gr.Row():
                         action_prev_btn = gr.Button("◀ Previous Action")
