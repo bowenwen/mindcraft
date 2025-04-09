@@ -7,14 +7,14 @@ from .base import Tool
 from .web_tool import WebTool
 from .memory_tool import MemoryTool
 from .file_tool import FileTool
-from .status_tool import StatusTool  # <<<--- ADDED IMPORT
+from .status_tool import StatusTool  # <<<ADDED IMPORT
 
 # Instantiate the consolidated tools
 AVAILABLE_TOOLS: Dict[str, Tool] = {
     "web": WebTool(),
     "memory": MemoryTool(),
     "file": FileTool(),
-    "status": StatusTool(),  # <<<--- ADDED INSTANCE
+    "status": StatusTool(),  # <<<ADDED INSTANCE
     # Add other future tools here
 }
 

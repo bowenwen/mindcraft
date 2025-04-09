@@ -7,7 +7,7 @@ import datetime
 import json
 from typing import Optional, List, Tuple
 
-# --- ChromaDB Imports ---
+# ChromaDB Imports
 import chromadb
 from chromadb.utils.embedding_functions import OllamaEmbeddingFunction
 
@@ -15,6 +15,7 @@ from chromadb.utils.embedding_functions import OllamaEmbeddingFunction
 from config import (
     OLLAMA_BASE_URL,
     OLLAMA_TIMEOUT,
+    OLLAMA_EMBED_MODEL,
     OLLAMA_CHAT_MODEL,
     OLLAMA_CHAT_MODEL_REPEAT_PENALTY,
     OLLAMA_CHAT_MODEL_TEMPERATURE,
@@ -22,12 +23,12 @@ from config import (
     OLLAMA_CHAT_MODEL_TOP_P,
     OLLAMA_CHAT_MODEL_MIN_P,
     MODEL_CONTEXT_LENGTH,
-    SHARED_ARTIFACT_FOLDER,
     SEARXNG_BASE_URL,
     SEARXNG_TIMEOUT,
+    SHARED_ARTIFACT_FOLDER,
     SHARED_DOC_ARCHIVE_DB_PATH,
     DOC_ARCHIVE_COLLECTION_NAME,
-    OLLAMA_EMBED_MODEL,
+    LOG_FOLDER,
 )
 
 import logging
@@ -80,6 +81,24 @@ def call_ollama_api(
                 log.info(
                     f"Ollama call successful: Input token count {input_tokens} ({input_tps} tps); Generated token count {resp_tokens} ({resp_tps} tps)..."
                 )
+                # save prompt response content
+                prompt_log_file = os.path.join(LOG_FOLDER, "prompt_history.md")
+                with open(prompt_log_file, "a", encoding="utf-8") as f:
+                    f.write(
+                        (
+                            "\n# LLM Call\n"
+                            + "Call time: "
+                            + datetime.datetime.now(datetime.timezone.utc).isoformat()
+                            + f"\nModel used: {model}\n"
+                            + f"Input token count: {input_tokens} ({input_tps} tps)\n"
+                            + f"Generated token count: {resp_tokens} ({resp_tps} tps)\n"
+                            + "\n## Prompt\n"
+                            + prompt
+                            + "\n## Response\n"
+                            + f"{response_data['message']['content']}\n"
+                        )
+                    )
+                # return successful response
                 return response_data["message"]["content"]
             elif "error" in response_data:
                 log.error(f"Error from Ollama API ({model}): {response_data['error']}")
@@ -110,7 +129,7 @@ def call_ollama_api(
     return None
 
 
-# --- Document Archive ChromaDB Setup (Shared) ---
+# Document Archive ChromaDB Setup (Shared)
 def setup_doc_archive_chromadb() -> Optional[chromadb.Collection]:
     """Initializes ChromaDB client and collection for the SHARED document archive."""
     log.info(
@@ -145,10 +164,10 @@ def setup_doc_archive_chromadb() -> Optional[chromadb.Collection]:
         return None
 
 
-# --- End Document Archive ChromaDB Setup ---
+# End Document Archive ChromaDB Setup
 
 
-# --- Status Check Functions (Unchanged) ---
+# Status Check Functions (Unchanged)
 def check_ollama_status(
     base_url: str = OLLAMA_BASE_URL, timeout: int = 5
 ) -> Tuple[bool, str]:
@@ -210,10 +229,10 @@ def check_searxng_status(
         return False, f"Unexpected Error: {str(e)[:50]}"
 
 
-# --- End Status Check Functions ---
+# End Status Check Functions
 
 
-# --- Time Formatting (Unchanged) ---
+# Time Formatting (Unchanged)
 def format_relative_time(timestamp_str: Optional[str]) -> str:
     """Converts an ISO timestamp string into a user-friendly relative time string."""
     if not timestamp_str:
@@ -264,7 +283,7 @@ def format_relative_time(timestamp_str: Optional[str]) -> str:
         return "Time Error"
 
 
-# --- File Path Utilities (Updated to use SHARED_ARTIFACT_FOLDER) ---
+# File Path Utilities (Updated to use SHARED_ARTIFACT_FOLDER)
 def sanitize_and_validate_path(
     filename: str,
     base_artifact_path: str = SHARED_ARTIFACT_FOLDER,  # Use shared path by default

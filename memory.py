@@ -18,6 +18,7 @@ from config import (
     OLLAMA_BASE_URL,
     OLLAMA_EMBED_MODEL,
     MEMORY_COLLECTION_NAME,
+    MAX_MEMORY_CONTENT_SNIPPETS,
     get_agent_db_path,  # Import function to get agent-specific path
 )
 from utils import call_ollama_api, format_relative_time
@@ -32,7 +33,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
-# --- ChromaDB Setup (Modified to be Agent-Specific) ---
+# ChromaDB Setup (Modified to be Agent-Specific)
 def setup_chromadb(agent_id: str) -> Optional[chromadb.Collection]:
     """Initializes ChromaDB client and collection for a specific agent."""
     agent_db_path = get_agent_db_path(agent_id)
@@ -66,10 +67,10 @@ def setup_chromadb(agent_id: str) -> Optional[chromadb.Collection]:
         return None
 
 
-# --- End ChromaDB Setup ---
+# End ChromaDB Setup
 
 
-# --- Agent Memory Class (No significant changes needed in core logic) ---
+# Agent Memory Class (No significant changes needed in core logic)
 class AgentMemory:
     """Manages interaction with the ChromaDB vector store for agent memories."""
 
@@ -265,9 +266,9 @@ class AgentMemory:
         for idx, mem in enumerate(filtered_candidates):
             meta_info = f"Type: {mem['metadata'].get('type', 'N/A')}, Dist: {mem.get('distance', 'N/A'):.4f}"
             relative_time = format_relative_time(mem["metadata"].get("timestamp"))
-            content_snippet = mem["content"][:200].replace("\n", " ") + "..."
+            content_snippet = mem["content"][:MAX_MEMORY_CONTENT_SNIPPETS].replace("\n", " ") + "..."
             candidate_details_list.append(
-                f"--- Memory Index {idx} [{relative_time}] ({meta_info}) ---\nContent Snippet: {content_snippet}\n---"
+                f"* Memory {idx + 1} [{relative_time}] ({meta_info}), Content Snippet: {content_snippet}\n"
             )
         candidate_details_str = "\n".join(candidate_details_list)
 
@@ -452,9 +453,7 @@ class AgentMemory:
                     )
                 except:
                     pass
-                log.info(
-                    f"Found {len(general_memories)} general memories (limit {limit})."
-                )
+                # return memory data
                 return general_memories
             else:
                 log.debug("No general memories found.")

@@ -34,7 +34,7 @@ class FileTool(Tool):
                 "Performs file operations within the SHARED agent workspace. Use subdirectories for organization, by project and content category (e.g., 'proj_xxx/summaries/report.txt', 'proj_xxx/code/script.py'). Requires 'action' parameter. "
                 "Actions: "
                 "'read' (requires 'filename'): Reads text content from a file (use subdirs). Returns content or error with directory listing if not found. "
-                "'write' (requires 'filename', 'content'): Writes text content to a file (use subdirs). Returns success status and paths. "
+                "'write' (requires 'filename', 'content'): Writes text content to a file (use subdirs). Directories automatically created as needed. Returns success status and paths. "
                 "'list' (optional 'directory'): Lists files/folders in the specified directory (defaults to workspace root). Returns list of paths."
             ),
         )

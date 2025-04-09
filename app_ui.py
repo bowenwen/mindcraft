@@ -15,7 +15,7 @@ from collections import deque, defaultdict
 import html
 import logging
 
-# --- Project Imports ---
+# Project Imports
 import config
 from utils import (
     call_ollama_api,
@@ -28,7 +28,7 @@ from data_structures import Task
 from agent import AutonomousAgent
 import chromadb
 
-# --- Logging Setup ---
+# Logging Setup
 console_log_buffer: deque = deque(maxlen=config.UI_LOG_MAX_LENGTH)
 file_log_handlers: Dict[str, logging.FileHandler] = {}
 main_log_handler: Optional[logging.FileHandler] = None
@@ -38,11 +38,11 @@ log_formatter = logging.Formatter(
     "[%(asctime)s] [%(levelname)s][%(name)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
 )
 
-# --- Store original streams before any potential redirection ---
+# Store original streams before any potential redirection
 original_stdout = sys.__stdout__  # Use underlying streams
 original_stderr = sys.__stderr__
 
-# --- Clear existing handlers FIRST ---
+# Clear existing handlers FIRST
 # This prevents handlers being added multiple times if the script is reloaded or run strangely
 for handler in list(root_logger.handlers):
     root_logger.removeHandler(handler)
@@ -88,7 +88,7 @@ class ConsoleLogHandler(logging.Handler):
         pass
 
 
-# --- Global State ---
+# Global State
 agents: Dict[str, AutonomousAgent] = {}
 active_agent_id: str = config.DEFAULT_AGENT_ID
 completed_tasks_since_switch: Dict[str, int] = defaultdict(int)  # Use defaultdict
@@ -97,10 +97,10 @@ shared_doc_archive_collection: Optional[chromadb.Collection] = None
 app_shutdown_requested = threading.Event()
 
 
-# --- Initialization ---
+# Initialization
 initialization_success = True
 try:
-    # --- Setup Main Log File ---
+    # Setup Main Log File
     main_log_filename = (
         f"main_run_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
     )
@@ -113,18 +113,18 @@ try:
     root_logger.addHandler(main_log_handler)  # Add ONLY the file handler to root
     file_log_handlers["main"] = main_log_handler
     print(
-        f"--- Multi-Agent App Start --- (Main logging to: {main_log_filepath})",
+        f"Multi-Agent App Start (Main logging to: {main_log_filepath})",
         file=original_stdout,
     )  # Use original stdout for initial messages
 
-    # --- Setup Console Logging ---
+    # Setup Console Logging
     # This handler ONLY writes to the deque.
     ui_console_handler = ConsoleLogHandler(console_log_buffer)
     ui_console_handler.setFormatter(log_formatter)
     ui_console_handler.setLevel(config.LOG_LEVEL)
     root_logger.addHandler(ui_console_handler)  # Add the deque handler to root
 
-    # --- REMOVED stdout/stderr redirection ---
+    # REMOVED stdout/stderr redirection
     # Rely solely on the logging framework now.
     # sys.stdout = log_stream_redirector # REMOVED
     # sys.stderr = log_stream_redirector # REMOVED
@@ -134,7 +134,7 @@ try:
         f"Logging configured. UI console buffer active. Main log: {main_log_filepath}"
     )
 
-    # --- Initialize Shared Document Archive ---
+    # Initialize Shared Document Archive
     log.info("Initializing SHARED Document Archive DB...")
     shared_doc_archive_collection = setup_doc_archive_chromadb()
     if shared_doc_archive_collection is None:
@@ -142,7 +142,7 @@ try:
             "SHARED Document Archive DB setup failed. Browse-with-query will not work."
         )
 
-    # --- Load Last Active Agent ---
+    # Load Last Active Agent
     if os.path.exists(config.LAST_ACTIVE_AGENT_FILE):
         try:
             with open(config.LAST_ACTIVE_AGENT_FILE, "r") as f:
@@ -161,10 +161,10 @@ try:
             )
             active_agent_id = config.DEFAULT_AGENT_ID
 
-    # --- Initialize Each Agent ---
+    # Initialize Each Agent
     for agent_id, agent_config_data in config.AGENTS.items():
         log.info(
-            f"--- Initializing Agent: {agent_id} ({agent_config_data.get('name', agent_id)}) ---"
+            f"Initializing Agent: {agent_id} ({agent_config_data.get('name', agent_id)})"
         )
         try:
             agent_instance = AutonomousAgent(
@@ -239,7 +239,7 @@ except Exception as e:
     ):
         try:
             main_log_handler.stream.write(
-                f"\n--- FATAL INIT ERROR ---\n{e}\n{traceback.format_exc()}\n--- END ERROR ---\n"
+                f"\nFATAL INIT ERROR\n{e}\n{traceback.format_exc()}\nEND ERROR\n"
             )
             main_log_handler.stream.flush()
         except Exception as log_err:
@@ -255,7 +255,7 @@ except Exception as e:
     agents = {}
 
 
-# --- Set Initial UI State Based on Active Agent ---
+# Set Initial UI State Based on Active Agent
 # Wrap this in a try-except just in case something goes wrong reading initial state
 initial_status_text = "Error: Agent not initialized."
 initial_thinking_text = "(Agent Initializing...)"
@@ -267,49 +267,13 @@ initial_plan_text = "(Agent Initializing - Plan)"
 initial_task_status_text = "(Agent Initializing - Task Status)"
 initial_console_log_text = "(Console Log Initializing...)"
 initial_agent_name = "N/A"
-initial_final_answer_display = "(No recent final answer)"
-
-try:
-    if initialization_success and active_agent_id in agents:
-        initial_state = agents[active_agent_id].get_ui_update_state()
-        task_status = initial_state.get("status", "paused")
-        initial_agent_name = initial_state.get("agent_name", active_agent_id)
-        initial_status_text = f"Status: {task_status}"
-        initial_thinking_text = initial_state.get("thinking", "(Agent Paused/Idle)")
-        initial_action_history_data = initial_state.get("action_history", [])
-        initial_action_desc_text = initial_state.get("current_action_desc", "N/A")
-        initial_plan_text = initial_state.get("current_plan", "(None)")
-        initial_task_status_text = f"ID: {initial_state.get('current_task_id', 'None')} ({task_status})\n\nDescription: {initial_state.get('current_task_desc', 'N/A')}"
-        initial_console_log_text = "".join(console_log_buffer) or "(Console Log Empty)"
-        initial_final_answer_display = initial_state.get(
-            "final_answer", "(No recent final answer)"
-        )
-        log.info(f"Calculated initial UI state for agent '{active_agent_id}'.")
-    elif not initialization_success:
-        # If init failed, ensure console log reflects it
-        initial_console_log_text = (
-            "FATAL: Agent initialization failed. Check startup logs.\n"
-            + "".join(console_log_buffer)
-        )
-        initial_final_answer_display = "(Initialization Failed)"
-    # else: agent ID not found but init was success? Should not happen based on logic above.
-
-except Exception as initial_state_err:
-    log.exception(
-        f"CRITICAL: Error getting initial UI state for agent '{active_agent_id}'."
-    )
-    initial_status_text = f"Error loading initial state for {active_agent_id}."
-    initial_final_answer_display = "(Error loading initial state)"
-    initial_console_log_text = (
-        f"CRITICAL Error during initial UI state calculation:\n{traceback.format_exc()}\n"
-        + "".join(console_log_buffer)
-    )
-    # Potentially halt here if initial state is crucial and fails?
-    # For now, we let it proceed to define the UI, which might show errors.
+initial_general_memory_data: pd.DataFrame = pd.DataFrame()
+initial_task_filter_choices: List[Tuple[str, str]] = [("All Tasks", "ALL")]
 
 
-# --- Formatting functions ---
-# (No changes needed in formatting functions: format_memories_for_display, format_web_search_results, etc.)
+# Formatting functions
+
+
 def format_memories_for_display(
     memories: List[Dict[str, Any]], context_label: str
 ) -> str:
@@ -399,13 +363,13 @@ def format_web_browse_results(results_data: Optional[Dict[str, Any]]) -> str:
     message = actual_results.get("message", "")
     truncated = actual_results.get("truncated", False)
     output = [
-        f"**📄 Web Browse Result (Full Page)**\n\n**URL:** {url}\n\n**Source Type:** {source}\n"
+        f"**📄 Web Browse Result**\n\n**URL:** {url}\n\n**Source Type:** {source}\n"
     ]
     if truncated:
         output.append("**Note:** Content was truncated.\n")
     if message:
         output.append(f"{message}\n")
-    output.append("---\n")  # Moved outside message check
+    output.append("\n")  # Moved outside message check
     output.append(
         "```text\n" + (content if content else "(No content extracted)") + "\n```"
     )
@@ -433,7 +397,7 @@ def format_web_browse_query_results(results_data: Optional[Dict[str, Any]]) -> s
         output.append(f"{message}\n")
     if not snippets:
         output.append(
-            "\n---\n_(No relevant snippets found for the query in the archived content.)_"
+            "\n,\n_(No relevant snippets found for the query in the archived content.)_"
         )
         return "\n".join(output)
     output.append("\n**Retrieved Snippets:**\n")
@@ -474,7 +438,7 @@ def format_other_tool_results(results_data: Optional[Dict[str, Any]]) -> str:
             "report_content", "(Status report content missing)"
         )
         message = actual_results.get("message", "")
-        return f"**📊 Status Report**\n\n**Status:** {status}\n\n{message}\n\n---\n```markdown\n{report_content}\n```"
+        return f"**📊 Status Report**\n\n**Status:** {status}\n\n{message}\n\n\n```markdown\n{report_content}\n```"
     output = [f"**🛠️ Tool Result: {tool_name} ({action})**\n\n**Status:** {status}\n"]
     if result_error:
         output.append(f"\n**Error:** {result_error}\n")
@@ -527,15 +491,87 @@ def format_display_df(data, columns):
             if col not in df.columns:
                 df[col] = pd.NA  # Use pandas NA
         # Reindex to ensure correct column order and fill missing values
-        return df.reindex(columns=columns, fill_value=pd.NA)
+        df = df.reindex(columns=columns, fill_value=pd.NA)
+        # Convert Timestamp if it exists and needs it
+        if "Timestamp" in df.columns:
+            # Convert to datetime, coercing errors, make timezone-aware (UTC) then remove tz info for display consistency
+            df["Timestamp_dt"] = pd.to_datetime(
+                df["Timestamp"], errors="coerce", utc=True
+            )
+            # Format for display, handling NaT
+            df["Timestamp"] = (
+                df["Timestamp_dt"].dt.strftime("%Y-%m-%d %H:%M:%S UTC").fillna("N/A")
+            )
+            df = df.drop(columns=["Timestamp_dt"])  # Remove temporary column
+
+        return df
     except Exception as df_err:
         log.error(f"Error creating DataFrame: {df_err}. Data sample: {str(data)[:200]}")
         return pd.DataFrame(columns=columns)
 
 
-# --- Agent Control Functions ---
+try:
+    if initialization_success and active_agent_id in agents:
+        initial_state = agents[active_agent_id].get_ui_update_state()
+        task_status = initial_state.get("status", "paused")
+        initial_agent_name = initial_state.get("agent_name", active_agent_id)
+        initial_status_text = f"Status: {task_status}"
+        initial_thinking_text = initial_state.get("thinking", "(Agent Paused/Idle)")
+        initial_action_history_data = initial_state.get("action_history", [])
+        initial_action_desc_text = initial_state.get("current_action_desc", "N/A")
+        initial_plan_text = initial_state.get("current_plan", "(None)")
+        initial_task_status_text = f"ID: {initial_state.get('current_task_id', 'None')} ({task_status})\n\nDescription: {initial_state.get('current_task_desc', 'N/A')}"
+        initial_console_log_text = "".join(console_log_buffer) or "(Console Log Empty)"
+        # Initial general memory formatting
+        general_memories_list = initial_state.get("recent_general_memories", [])
+        memory_cols = ["Relative Time", "Timestamp", "Type", "Content Snippet", "ID"]
+        initial_general_memory_data = format_display_df(
+            general_memories_list, memory_cols
+        )
+
+        # Initial Task filter choices
+        all_tasks_for_filter = (
+            agents[active_agent_id]
+            .get_agent_dashboard_state()
+            .get("all_tasks_for_filter", [])
+        )
+        initial_task_filter_choices.extend(
+            [
+                (
+                    f"{t['id'][:8]}... ({t['status']}) - {t['description'][:30]}...",
+                    t["id"],
+                )
+                for t in all_tasks_for_filter
+            ]
+        )
+
+        log.info(f"Calculated initial UI state for agent '{active_agent_id}'.")
+    elif not initialization_success:
+        # If init failed, ensure console log reflects it
+        initial_console_log_text = (
+            "FATAL: Agent initialization failed. Check startup logs.\n"
+            + "".join(console_log_buffer)
+        )
+        initial_general_memory_data = pd.DataFrame([{"Error": "Initialization Failed"}])
+    # else: agent ID not found but init was success? Should not happen based on logic above.
+
+except Exception as initial_state_err:
+    log.exception(
+        f"CRITICAL: Error getting initial UI state for agent '{active_agent_id}'."
+    )
+    initial_status_text = f"Error loading initial state for {active_agent_id}."
+    initial_general_memory_data = pd.DataFrame(
+        [{"Error": f"Error loading state: {initial_state_err}"}]
+    )
+    initial_console_log_text = (
+        f"CRITICAL Error during initial UI state calculation:\n{traceback.format_exc()}\n"
+        + "".join(console_log_buffer)
+    )
+    # Potentially halt here if initial state is crucial and fails?
+    # For now, we let it proceed to define the UI, which might show errors.
 
 
+# Agent Control Functions (Unchanged: save_last_active_agent, switch_active_agent)
 def save_last_active_agent():
     """Saves the current active_agent_id to a file."""
     if not initialization_success:
@@ -630,7 +666,7 @@ def switch_active_agent(new_agent_id: str) -> Tuple[str, str]:
     return status_msg, feedback_msg
 
 
-# --- Monitor Tab functions (Operate on active agent) ---
+# Monitor Tab functions (Unchanged: start_agent_processing, pause_agent_processing, suggest_task_change)
 def start_agent_processing():
     if not initialization_success or active_agent_id not in agents:
         log.error("UI start failed: Active agent not initialized or init failed.")
@@ -675,10 +711,21 @@ def suggest_task_change():
     return feedback
 
 
-# --- Modified: update_monitor_ui operates on active agent, handles auto-switch ---
-def update_monitor_ui() -> (
-    Tuple[str, str, str, str, str, str, str, str, str, str, str, List[Dict]]
-):
+# update_monitor_ui <<< MODIFIED >>>
+def update_monitor_ui() -> Tuple[
+    str,  # current_task_display
+    str,  # current_action_display
+    str,  # current_plan_display
+    str,  # dependent_tasks_display
+    str,  # thinking_display
+    str,  # console_log_output
+    str,  # memory_display (task-specific)
+    pd.DataFrame,  # general_memory_df
+    str,  # tool_results_display
+    str,  # status_bar_text
+    str,  # agent_selection_value
+    List[Dict],  # current_action_history_data (for history tab)
+]:
     """Fetches the latest active agent UI state, console log, handles auto-switch, and returns UI updates."""
     global active_agent_id, completed_tasks_since_switch
     current_task_display = "(Error)"
@@ -686,15 +733,20 @@ def update_monitor_ui() -> (
     current_plan_display = "(Error)"
     dependent_tasks_display = "Dependent Tasks: (Error)"
     thinking_display = "(Error)"
-    # Read directly from deque for latest log data
     console_log_output = "".join(list(console_log_buffer)) or "(Console Log Empty)"
     memory_display = "(Error)"
+    general_memory_df = pd.DataFrame()  # Initialize empty
     tool_results_display = "(Error)"
     status_bar_text = "Error"
-    final_answer_display = "(None)"
     current_action_history_data = []
-
     agent_selection_value = active_agent_id
+    memory_cols = [
+        "Relative Time",
+        "Timestamp",
+        "Type",
+        "Content Snippet",
+        "ID",
+    ]  # Define cols for general mem
 
     if not initialization_success or not agents or active_agent_id not in agents:
         status_bar_text = "Error: Active agent not initialized or init failed."
@@ -703,9 +755,8 @@ def update_monitor_ui() -> (
         console_log_output = "Agent Not Initialized / Init Failed\n" + "".join(
             list(console_log_buffer)
         )
-        final_answer_display = (
-            "(Initialization Failed)"  # Ensure error case provides value
-        )
+        general_memory_df = format_display_df([], memory_cols)  # Ensure empty df
+
         return (
             current_task_display,
             current_action_display,
@@ -714,9 +765,9 @@ def update_monitor_ui() -> (
             thinking_display,
             console_log_output,
             memory_display,
+            general_memory_df,  # Return empty df
             tool_results_display,
             status_bar_text,
-            final_answer_display,
             agent_selection_value,
             current_action_history_data,
         )
@@ -727,7 +778,7 @@ def update_monitor_ui() -> (
             ui_state = agent.get_ui_update_state()
 
             # Extract state for UI elements
-            current_task_id = ui_state.get("current_task_id")  # Keep as None if missing
+            current_task_id = ui_state.get("current_task_id")
             task_status = ui_state.get("status", "unknown")
             current_task_desc = ui_state.get("current_task_desc", "N/A")
             agent_name = ui_state.get("agent_name", active_agent_id)
@@ -743,10 +794,29 @@ def update_monitor_ui() -> (
             else:
                 dependent_tasks_display = "Dependent Tasks: (None)"
             thinking_display = ui_state.get("thinking", "(No thinking recorded)")
+
+            # Format task-specific memories
             recent_memories = ui_state.get("recent_memories", [])
             memory_display = format_memories_for_display(
                 recent_memories, context_label=f"Monitor ({agent_name})"
             )
+
+            # Format general memories
+            recent_general_memories = ui_state.get("recent_general_memories", [])
+            # Add relative time if missing (should be done by agent ideally)
+            for mem in recent_general_memories:
+                if "Relative Time" not in mem:
+                    mem["Relative Time"] = format_relative_time(mem.get("Timestamp"))
+            general_memory_df = format_display_df(recent_general_memories, memory_cols)
+            if not general_memory_df.empty and "Timestamp" in general_memory_df.columns:
+                # Sort descending by original timestamp string
+                general_memory_df = general_memory_df.sort_values(
+                    by="Timestamp",
+                    ascending=False,
+                    na_position="last",
+                    key=lambda col: pd.to_datetime(col, errors="coerce"),
+                )
+
             last_action = ui_state.get("last_action_type")
             last_results = ui_state.get("last_tool_results")
 
@@ -779,10 +849,10 @@ def update_monitor_ui() -> (
                     )
                     tool_results_display = format_other_tool_results(last_results)
             elif last_action == "final_answer":
-                tool_results_display = "(Provided Final Answer)"
+                tool_results_display = "(Provided Final Answer - See History Tab)"
             elif last_action == "error":
                 tool_results_display = (
-                    "(Agent action resulted in error - see Console Log)"
+                    "(Agent action resulted in error - see Console Log or History Tab)"
                 )
             else:
                 # Display last known web content if no recent tool action
@@ -797,15 +867,9 @@ def update_monitor_ui() -> (
                     tool_results_display = "(No recent tool execution or web content)"
 
             status_bar_text = f"Status: {task_status}"
-            final_answer = ui_state.get("final_answer")
-            final_answer_display = (
-                final_answer if final_answer else "(No recent final answer)"
-            )
             current_action_history_data = ui_state.get("action_history", [])
 
-            # --- Auto-Switch Logic ---
-            # Trigger switch only if task is completed/failed AND there's actually a task ID recorded
-            # AND the agent loop isn't running (to avoid switching mid-processing if status updates late)
+            # Auto-Switch Logic (remains the same)
             agent_is_idle_or_paused = task_status in [
                 "idle",
                 "paused",
@@ -817,12 +881,6 @@ def update_monitor_ui() -> (
                 and current_task_id is not None
                 and agent_is_idle_or_paused
             ):
-
-                # Check if this is a *new* completion/failure we haven't counted yet.
-                # We rely on the agent setting current_task_id to None *after* completion handling.
-                # If the current_task_id still matches the last completed one for this counter, don't increment again.
-                # Let's simplify: Increment whenever we see completed/failed with a valid task ID,
-                # but rely on switch_active_agent to reset the counter for the *target* agent.
                 log.info(
                     f"Agent '{active_agent_id}' finished task {current_task_id} with status {task_status}. Incrementing switch counter."
                 )
@@ -832,7 +890,7 @@ def update_monitor_ui() -> (
                 )
 
                 if (
-                    len(agents) > 1  # Only switch if there are multiple agents
+                    len(agents) > 1
                     and completed_tasks_since_switch[active_agent_id]
                     >= config.AUTO_SWITCH_TASK_COUNT
                 ):
@@ -847,15 +905,14 @@ def update_monitor_ui() -> (
                         f"AUTO-SWITCHING from {active_agent_id} to {next_agent_id}"
                     )
 
-                    # Switch agent (pauses current, updates active_id, resets counter for target, ensures next is paused)
                     _new_status_msg, _feedback_msg = switch_active_agent(next_agent_id)
                     status_bar_text = _new_status_msg
                     agent_selection_value = next_agent_id
 
                     # Get state of the *new* agent
-                    agent = agents[active_agent_id]  # Now points to the new agent
+                    agent = agents[active_agent_id]
                     ui_state = agent.get_ui_update_state()
-                    # Re-extract all state variables for the new agent
+                    # Re-extract state variables for the new agent
                     current_task_id = ui_state.get("current_task_id")
                     task_status = ui_state.get("status", "unknown")
                     current_task_desc = ui_state.get("current_task_desc", "N/A")
@@ -886,23 +943,38 @@ def update_monitor_ui() -> (
                     memory_display = format_memories_for_display(
                         recent_memories, context_label=f"Monitor ({agent_name})"
                     )
-                    # Reset tool results display for the new agent
-                    tool_results_display = "(No recent tool execution for this agent)"
-                    final_answer = ui_state.get("final_answer")
-                    final_answer_display = (
-                        final_answer
-                        if final_answer
-                        else "(No recent final answer for this agent)"
+                    # Refresh general memories for new agent
+                    recent_general_memories = ui_state.get(
+                        "recent_general_memories", []
                     )
+                    # Add relative time if missing
+                    for mem in recent_general_memories:
+                        if "Relative Time" not in mem:
+                            mem["Relative Time"] = format_relative_time(
+                                mem.get("Timestamp")
+                            )
+                    general_memory_df = format_display_df(
+                        recent_general_memories, memory_cols
+                    )
+                    if (
+                        not general_memory_df.empty
+                        and "Timestamp" in general_memory_df.columns
+                    ):
+                        general_memory_df = general_memory_df.sort_values(
+                            by="Timestamp",
+                            ascending=False,
+                            na_position="last",
+                            key=lambda col: pd.to_datetime(col, errors="coerce"),
+                        )
+
+                    tool_results_display = "(No recent tool execution for this agent)"
                     current_action_history_data = ui_state.get("action_history", [])
                     status_bar_text = f"Status: {task_status}"
 
     except Exception as e:
         log.exception("Error in update_monitor_ui")
         error_msg = f"ERROR updating UI:\n{traceback.format_exc()}"
-        console_log_output = (
-            error_msg + "\n" + "".join(list(console_log_buffer))
-        )  # Include buffer with error
+        console_log_output = error_msg + "\n" + "".join(list(console_log_buffer))
         status_bar_text = "Error updating UI"
         current_task_display = "Error"
         current_action_display = "Error"
@@ -910,8 +982,10 @@ def update_monitor_ui() -> (
         dependent_tasks_display = "Dependent Tasks: (Error)"
         thinking_display = "Error"
         memory_display = "Error"
+        general_memory_df = format_display_df(
+            [{"Error": str(e)}], memory_cols
+        )  # Show error in df
         tool_results_display = "Error"
-        final_answer_display = "Error"
         current_action_history_data = [{"error": f"Update failed: {e}"}]
 
     return (
@@ -920,94 +994,167 @@ def update_monitor_ui() -> (
         current_plan_display,
         dependent_tasks_display,
         thinking_display,
-        console_log_output,  # Return the latest from the deque
+        console_log_output,
         memory_display,
+        general_memory_df,  # Return updated general memories
         tool_results_display,
         status_bar_text,
-        final_answer_display,
         agent_selection_value,
         current_action_history_data,
     )
 
 
-# --- END MODIFIED update_monitor_ui ---
+# End MODIFIED update_monitor_ui
 
 
-# --- Functions for Action History Navigation (Operate on data passed from UI state) ---
-# format_action_details_for_display remains unchanged
+# Functions for Action History Navigation <<< MODIFIED >>>
 def format_action_details_for_display(
     action_data: Optional[Dict],
-) -> Tuple[str, str, str, str, str]:
+) -> Tuple[str, str, str, str, str, str]:  # Added llm_prompt
     if not action_data or not isinstance(action_data, dict):
-        return ("(No Action Data)", "(N/A)", "(N/A)", "(N/A)", "(N/A)")
+        return (
+            "(No Action Data)",
+            "(N/A)",
+            "(N/A)",
+            "(N/A)",  # llm_prompt
+            "(N/A)",
+            "(N/A)",
+        )
     cycle_num = action_data.get("action_cycle", "N/A")
     task_id = action_data.get("task_id", "N/A")
     timestamp = action_data.get("timestamp", "N/A")
     rel_time = format_relative_time(timestamp)
-    title = f"**Action Cycle {cycle_num}** (Task: {task_id[:8]}...) - {rel_time}"
+    title = f"**Cycle {cycle_num}** (Task: {task_id[:8]}... | Attempt: {action_data.get('task_attempt','?')}) - {rel_time}"
     objective = action_data.get("action_objective", "(Objective not recorded)")
     thinking = action_data.get("thinking", "(No thinking recorded)")
+    llm_prompt = action_data.get(
+        "llm_prompt", "(LLM prompt not recorded)"
+    )  # <<< GET PROMPT >>>
     log_snippet = action_data.get("log_snippet", "(No log snippet)")
     action_type = action_data.get("action_type")
     action_params = action_data.get("action_params")
     result_status = action_data.get("result_status")
     result_summary = action_data.get("result_summary", "(No result summary)")
-    results_display = f"**Action:** {action_type}\n\n"
-    if action_params:
-        try:
-            results_display += (
-                f"**Params:**\n```json\n{json.dumps(action_params, indent=2)}\n```\n"
-            )
-        except:
-            results_display += f"**Params:** {action_params}\n\n"
-    results_display += f"**Result Status:** `{result_status}`\n\n"
-    results_display += (
-        f"**Result/Answer Summary:**\n```markdown\n{result_summary}\n```\n"
-    )
-    return title, objective, thinking, log_snippet, results_display
+
+    results_display = f"**Action Type:** {action_type}\n\n"
+    if action_type == "use_tool":
+        results_display += f"**Tool:** {action_data.get('tool', '?')}\n"
+        if action_params:
+            try:
+                results_display += f"**Params:**\n```json\n{json.dumps(action_params, indent=2)}\n```\n"
+            except:
+                results_display += f"**Params:** {action_params}\n\n"
+        results_display += f"**Result Status:** `{result_status}`\n\n"
+        results_display += f"**Result Summary:**\n```markdown\n{result_summary}\n```\n"
+    elif action_type == "final_answer":
+        results_display += f"**Result Status:** `{result_status}`\n\n"
+        results_display += f"{result_summary}\n"  # Result summary contains the formatted answer/reflections
+    elif action_type == "error":
+        results_display += f"**Result Status:** `{result_status}`\n\n"
+        results_display += f"**Error Details:**\n```text\n{result_summary}\n```\n"  # Result summary contains error message
+    else:  # Internal / Unknown
+        results_display += f"**Result Status:** `{result_status}`\n\n"
+        results_display += f"{result_summary}\n"
+
+    return title, objective, thinking, llm_prompt, log_snippet, results_display
 
 
-# view_action_relative remains unchanged
-def view_action_relative(
-    current_index_str: str, delta: int, history_data: List[Dict]
-) -> Tuple[str, str, str, str, str, str]:
+def filter_and_get_action_details(
+    selected_task_id: str,
+    current_index_str: str,
+    delta: int,
+    full_history_data: List[Dict],
+) -> Tuple[str, str, str, str, str, str, str, List[Dict]]:
+    """Filters history by task_id and navigates steps."""
     try:
         current_index = int(current_index_str)
     except (ValueError, TypeError):
         current_index = 0
-    if not history_data:
-        title, objective, thinking, log_s, result_s = format_action_details_for_display(
-            None
+
+    if not full_history_data:
+        title, objective, thinking, prompt, log_s, result_s = (
+            format_action_details_for_display(None)
         )
-        return str(0), title, objective, thinking, log_s, result_s
+        return str(0), title, objective, thinking, prompt, log_s, result_s, []
+
+    # Filter history based on selected task ID
+    if selected_task_id == "ALL" or not selected_task_id:
+        filtered_history = full_history_data
+    else:
+        filtered_history = [
+            item
+            for item in full_history_data
+            if item.get("task_id") == selected_task_id
+        ]
+
+    if not filtered_history:
+        title, objective, thinking, prompt, log_s, result_s = (
+            format_action_details_for_display(None)
+        )
+        return str(0), title, objective, thinking, prompt, log_s, result_s, []
+
+    # Navigate within the filtered history
     new_index = current_index + delta
-    new_index = max(0, min(len(history_data) - 1, new_index))
-    selected_data = history_data[new_index]
-    title, objective, thinking, log_s, result_s = format_action_details_for_display(
-        selected_data
+    new_index = max(0, min(len(filtered_history) - 1, new_index))
+
+    selected_data = filtered_history[new_index]
+    title, objective, thinking, prompt, log_s, result_s = (
+        format_action_details_for_display(selected_data)
     )
-    return str(new_index), title, objective, thinking, log_s, result_s
+
+    return (
+        str(new_index),
+        title,
+        objective,
+        thinking,
+        prompt,
+        log_s,
+        result_s,
+        filtered_history,
+    )
 
 
-# view_latest_action remains unchanged
-def view_latest_action(history_data: List[Dict]) -> Tuple[str, str, str, str, str, str]:
-    if not history_data:
-        title, objective, thinking, log_s, result_s = format_action_details_for_display(
-            None
+def update_history_task_filter_choices() -> gr.Dropdown:
+    """Updates the choices for the task filter dropdown in the history tab."""
+    if not initialization_success or not agents or active_agent_id not in agents:
+        return gr.Dropdown(
+            choices=[("Error loading tasks", None)], value=None, interactive=False
         )
-        return str(0), title, objective, thinking, log_s, result_s
-    latest_index = len(history_data) - 1
-    selected_data = history_data[latest_index]
-    title, objective, thinking, log_s, result_s = format_action_details_for_display(
-        selected_data
-    )
-    return str(latest_index), title, objective, thinking, log_s, result_s
+
+    try:
+        agent = agents[active_agent_id]
+        # Fetch the latest task list directly
+        state_data = agent.get_agent_dashboard_state()
+        all_tasks = state_data.get("all_tasks_for_filter", [])
+        log.info(
+            f"Updating history filter with {len(all_tasks)} tasks for agent {active_agent_id}"
+        )
+        task_choices = [("All Tasks", "ALL")] + [
+            (f"{t['id'][:8]}... ({t['status']}) - {t['description'][:30]}...", t["id"])
+            for t in all_tasks
+        ]
+        # Preserve current selection if possible, otherwise default to ALL
+        # current_value = # How to get current value easily? Pass it in?
+        # For now, just reset to ALL on refresh.
+        return gr.Dropdown(
+            choices=task_choices, value="ALL", label="Filter by Task", interactive=True
+        )
+    except Exception as e:
+        log.exception(
+            f"Error updating history task filter choices for agent {active_agent_id}"
+        )
+        return gr.Dropdown(
+            choices=[("Error loading tasks", None)],
+            value=None,
+            label="Filter by Task (Error)",
+            interactive=False,
+        )
 
 
-# --- End Action History Functions ---
+# End Action History Functions
 
 
-# --- Chat Tab functions (Operate on active agent) ---
+# Chat Tab functions (Unchanged: _should_generate_task, prioritize_generated_task, create_priority_task, chat_response)
 def _should_generate_task(user_msg: str, assistant_response: str) -> bool:
     if not agents or active_agent_id not in agents:
         return False
@@ -1079,7 +1226,7 @@ def create_priority_task(message_text: str):
     return feedback
 
 
-# --- Refactored Chat Response using yield ---
+# Refactored Chat Response using yield (Unchanged)
 def chat_response(
     message: str, history: List[Dict[str, str]]
 ) -> Iterator[Tuple[List[Dict[str, str]], str, str, str, Optional[str]]]:
@@ -1108,7 +1255,7 @@ def chat_response(
     log.info(f"[{agent.log_prefix}] User message: '{message}'")
     history.append({"role": "user", "content": message})
 
-    # --- Phase 1: Get Primary Chat Response ---
+    # Phase 1: Get Primary Chat Response
     try:
         agent_state = agent.get_ui_update_state()
         agent_identity = agent.identity_statement
@@ -1218,7 +1365,7 @@ def chat_response(
 
         history.append({"role": "assistant", "content": assistant_response_text})
 
-        # --- Yield the initial response ---
+        # Yield the initial response
         yield history, memory_display_text, task_display_text, "", last_gen_id
 
     except Exception as e:
@@ -1234,7 +1381,7 @@ def chat_response(
         yield history, f"Error:\n```\n{traceback.format_exc()}\n```", task_display_text, "", None
         return  # Stop processing on error
 
-    # --- Phase 2: Background Actions (Memory Logging, Task Generation) ---
+    # Phase 2: Background Actions (Memory Logging, Task Generation)
     # These happen *after* the initial response is yielded to the UI
     try:
         # Refresh agent status before logging memory or generating task
@@ -1374,7 +1521,7 @@ def chat_response(
             )
             task_display_text = "(No new task warranted based on conversation)"
 
-        # --- Yield the final state after background actions ---
+        # Yield the final state after background actions
         # This updates the UI panels after background processing is done
         yield history, memory_display_text, task_display_text, "", last_gen_id
 
@@ -1388,10 +1535,10 @@ def chat_response(
         yield history, memory_display_text, task_display_text, "", last_gen_id
 
 
-# --- End Chat Response Refactor ---
+# End Chat Response Refactor
 
 
-# --- Agent State Tab functions (Operate on active agent) ---
+# Agent State Tab functions <<< MODIFIED >>>
 def refresh_agent_state_display():
     log.info(
         f"State Tab: Refresh button clicked. Fetching latest state for agent '{active_agent_id}'..."
@@ -1400,19 +1547,18 @@ def refresh_agent_state_display():
         error_df = pd.DataFrame(columns=["Error"])
         return (
             "Agent not initialized.",
-            error_df,
-            error_df,
-            error_df,
-            error_df,
-            "Error: Agent not initialized.",
-            gr.Dropdown(choices=["Error"], value="Error"),
-            error_df,
-            error_df,
-            [],
-            [],
-            [],
-            [],
-            "(No details to show)",
+            error_df,  # pending
+            error_df,  # inprogress
+            error_df,  # completed
+            error_df,  # failed
+            "Error: Agent not initialized.",  # memory summary
+            gr.Dropdown(choices=["Error"], value="Error"),  # task memory select
+            error_df,  # task memory df
+            [],  # pending data state
+            [],  # inprogress data state
+            [],  # completed data state
+            [],  # failed data state
+            "(No details to show)",  # task details markdown
         )
     try:
         agent = agents[active_agent_id]
@@ -1423,26 +1569,26 @@ def refresh_agent_state_display():
         completed_cols = ["ID", "Description", "Completed At", "Result Snippet"]
         failed_cols = ["ID", "Description", "Failed At", "Reason", "Reattempts"]
         memory_cols = ["Relative Time", "Timestamp", "Type", "Content Snippet", "ID"]
+
         pending_raw = state_data.get("pending_tasks", [])
         inprogress_raw = state_data.get("in_progress_tasks", [])
         completed_raw = state_data.get("completed_tasks", [])
         failed_raw = state_data.get("failed_tasks", [])
+
         pending_df = format_display_df(pending_raw, pending_cols)
         inprogress_df = format_display_df(inprogress_raw, inprogress_cols)
         completed_df = format_display_df(completed_raw, completed_cols)
         failed_df = format_display_df(failed_raw, failed_cols)
+
         completed_failed_tasks_data = state_data.get("completed_failed_tasks_data", [])
         task_id_choices_tuples = [
             (f"{t['ID'][:8]} - {t['Description'][:50]}...", t["ID"])
             for t in completed_failed_tasks_data
-            if "ID" in t and "Description" in t  # Add check
+            if "ID" in t and "Description" in t
         ]
         dropdown_choices = [("Select Task ID...", None)] + task_id_choices_tuples
         initial_dropdown_value = None
-        general_memories = agent.get_formatted_general_memories()
-        for mem in general_memories:
-            mem["Relative Time"] = format_relative_time(mem.get("Timestamp"))
-        general_mem_df = format_display_df(general_memories, memory_cols)
+
         return (
             state_data.get("identity_statement", "Error loading identity"),
             pending_df,
@@ -1453,11 +1599,10 @@ def refresh_agent_state_display():
             gr.Dropdown(
                 choices=dropdown_choices,
                 value=initial_dropdown_value,
-                label="Select Task ID (Completed/Failed)",
+                label="Select Task ID (Completed/Failed for Memory View)",  # Modified label
                 interactive=True,
             ),
             pd.DataFrame(columns=memory_cols),  # Placeholder for task-specific memories
-            general_mem_df,
             pending_raw,
             inprogress_raw,
             completed_raw,
@@ -1478,7 +1623,6 @@ def refresh_agent_state_display():
             f"Memory Summary Error: {e}",
             gr.Dropdown(choices=["Error"], value="Error"),
             error_df,
-            error_df,
             [],
             [],
             [],
@@ -1487,6 +1631,7 @@ def refresh_agent_state_display():
         )
 
 
+# update_task_memory_display remains largely the same, but fetches relative time
 def update_task_memory_display(selected_task_id: str):
     log.debug(
         f"State Tab: Task ID selected: {selected_task_id} for agent {active_agent_id}"
@@ -1502,16 +1647,19 @@ def update_task_memory_display(selected_task_id: str):
     try:
         agent = agents[active_agent_id]
         memories = agent.get_formatted_memories_for_task(selected_task_id)
+        # Add relative time here if not added by the agent function
         for mem in memories:
-            mem["Relative Time"] = format_relative_time(mem.get("Timestamp"))
-        # Use format_display_df for consistency
+            if "Relative Time" not in mem:
+                mem["Relative Time"] = format_relative_time(mem.get("Timestamp"))
+
         mem_df = format_display_df(memories, columns)
         if not mem_df.empty and "Timestamp" in mem_df.columns:
-            # Ensure Timestamp is datetime for sorting, coercing errors
-            mem_df["Timestamp"] = pd.to_datetime(mem_df["Timestamp"], errors="coerce")
-            # Sort, handling NaT values that might result from coercion
+            # Sort ascending by original timestamp string
             mem_df = mem_df.sort_values(
-                by="Timestamp", ascending=True, na_position="first"
+                by="Timestamp",
+                ascending=True,
+                na_position="first",
+                key=lambda col: pd.to_datetime(col, errors="coerce"),
             )
         return mem_df
 
@@ -1519,33 +1667,6 @@ def update_task_memory_display(selected_task_id: str):
         log.exception(
             f"Error fetching memories for task {selected_task_id} on agent {active_agent_id}"
         )
-        return pd.DataFrame([{"Error": str(e)}])
-
-
-def update_general_memory_display():
-    log.debug(
-        f"State Tab: Refreshing general memories display for agent {active_agent_id}..."
-    )
-    columns = ["Relative Time", "Timestamp", "Type", "Content Snippet", "ID"]
-    if not initialization_success or not agents or active_agent_id not in agents:
-        return pd.DataFrame(columns=columns)
-    try:
-        agent = agents[active_agent_id]
-        memories = agent.get_formatted_general_memories()
-        for mem in memories:
-            mem["Relative Time"] = format_relative_time(mem.get("Timestamp"))
-        # Use format_display_df for consistency
-        mem_df = format_display_df(memories, columns)
-        if not mem_df.empty and "Timestamp" in mem_df.columns:
-            # Ensure Timestamp is datetime for sorting, coercing errors
-            mem_df["Timestamp"] = pd.to_datetime(mem_df["Timestamp"], errors="coerce")
-            # Sort descending, handling NaT values
-            mem_df = mem_df.sort_values(
-                by="Timestamp", ascending=False, na_position="last"
-            )
-        return mem_df
-    except Exception as e:
-        log.exception(f"Error fetching general memories for agent {active_agent_id}")
         return pd.DataFrame([{"Error": str(e)}])
 
 
@@ -1582,8 +1703,7 @@ def show_task_details(evt: gr.SelectData, task_list: list) -> str:
         return f"(Error displaying task details: {e})"
 
 
-# --- Gradio UI Definition ---
-# Add print statement right before defining UI
+# Gradio UI Definition <<< MODIFIED >>>
 log.info("Defining Gradio UI...")
 if not initialization_success or not agents:
     log.critical("Agent initialization failed. Cannot define UI.")
@@ -1609,21 +1729,22 @@ else:
     ) as demo:
         gr.Markdown("# Multi-Agent Control Center & Chat")
 
-        # UI State Variables (will hold data for the *active* agent)
-        action_history_state = gr.State(initial_action_history_data)
-        action_history_index_state = gr.State(
-            str(
-                len(initial_action_history_data) - 1
-                if initial_action_history_data
-                else 0
-            )
-        )
+        # UI State Variables
+        # Monitor Tab uses _ui_update_state directly via update_monitor_ui
+        # Chat Tab uses chatbot history and other states defined in the tab
+        # State Tab uses states defined below
         pending_tasks_data_state = gr.State([])
         inprogress_tasks_data_state = gr.State([])
         completed_tasks_data_state = gr.State([])
         failed_tasks_data_state = gr.State([])
+        # Action History Tab states
+        full_action_history_state = gr.State(
+            initial_action_history_data
+        )  # Holds ALL history for the agent
+        hist_filtered_action_data_state = gr.State([])  # Holds history filtered by task
+        hist_current_index_state = gr.State(str(0))  # Index within the *filtered* list
 
-        # --- Agent Selection Row (appears above tabs) ---
+        # Agent Selection Row (appears above tabs)
         with gr.Accordion("Agent Control", open=True):
             with gr.Row():
                 agent_selector_dropdown = gr.Dropdown(
@@ -1660,15 +1781,16 @@ else:
                 start_resume_btn = gr.Button("▶️ Start / Resume", variant="primary")
                 pause_btn = gr.Button("⏸️ Pause")
                 suggest_change_btn = gr.Button("⏭️ Suggest Task Change")
+
         with gr.Tabs():
-            # --- Monitor Tab ---
+            # Monitor Tab <<< MODIFIED >>>
             with gr.TabItem("Agent Monitor"):
                 with gr.Accordion("Console Log", open=True):
                     monitor_log = gr.Textbox(
                         label="🪵 Console Log",
                         value=initial_console_log_text,
-                        lines=20,  # Increased lines
-                        max_lines=20,  # Increased max_lines
+                        lines=20,
+                        max_lines=20,
                         autoscroll=True,
                         interactive=False,
                         show_copy_button=True,
@@ -1709,58 +1831,38 @@ else:
                                 interactive=False,
                                 show_copy_button=True,
                             )
-                            monitor_final_answer = gr.Textbox(
-                                label="🏆 Last Final Answer",
-                                lines=5,
-                                interactive=False,
-                                show_copy_button=True,
-                                value=initial_final_answer_display,
-                            )
+
                 with gr.Accordion("Tools & Memory", open=True):
                     with gr.Row():
                         with gr.Column(scale=1):
                             monitor_tool_results = gr.Markdown(
                                 value=initial_tool_results_text,
-                                label="🛠️ Tool Output / Browse Content",  # Renamed label slightly
+                                label="🛠️ Tool Output / Browse Content",
                             )
                         with gr.Column(scale=1):
                             monitor_memory = gr.Markdown(
                                 value=format_memories_for_display(
                                     [], f"Monitor ({initial_agent_name})"
-                                ),  # Start empty
-                                label="🧠 Recent/Relevant Memories",  # Renamed label slightly
+                                ),
+                                label="🧠 Relevant Memories (Task-Specific)",
                             )
-                with gr.Accordion("Action History", open=False):
-                    with gr.Row():
-                        action_prev_btn = gr.Button("◀ Previous Action")
-                        action_latest_btn = gr.Button(
-                            "Latest Action", variant="secondary"
-                        )
-                        action_next_btn = gr.Button("Next Action ▶")
-                    action_hist_title = gr.Markdown(
-                        "**Action History** (Load latest to view)"
-                    )
-                    action_hist_objective = gr.Markdown(
-                        label="Action Objective", value="(No history selected)"
-                    )
                     with gr.Row():
                         with gr.Column(scale=1):
-                            action_hist_thinking = gr.Textbox(
-                                label="Thinking",
-                                lines=10,
+                            gr.Markdown("##### 🕰️ General Memories (Recent)")
+                            monitor_general_memory_display = gr.DataFrame(
+                                value=initial_general_memory_data,
+                                headers=[
+                                    "Relative Time",
+                                    "Timestamp",
+                                    "Type",
+                                    "Content Snippet",
+                                    "ID",
+                                ],
                                 interactive=False,
-                                show_copy_button=True,
-                            )
-                            action_hist_log = gr.Textbox(
-                                label="Log Snippet", lines=5, interactive=False
-                            )
-                        with gr.Column(scale=1):
-                            action_hist_result = gr.Markdown(
-                                label="Action/Result Summary",
-                                value="(No history selected)",
+                                wrap=True,
                             )
 
-                # Monitor Button Clicks (call functions that use active_agent_id)
+                # Monitor Button Clicks
                 start_resume_btn.click(
                     fn=start_agent_processing, inputs=None, outputs=monitor_status_bar
                 )
@@ -1771,41 +1873,8 @@ else:
                     fn=suggest_task_change, inputs=None, outputs=suggestion_feedback_box
                 )
 
-                # Action History Clicks (use data from action_history_state)
-                action_hist_view_outputs = [
-                    action_history_index_state,
-                    action_hist_title,
-                    action_hist_objective,
-                    action_hist_thinking,
-                    action_hist_log,
-                    action_hist_result,
-                ]
-                action_prev_btn.click(
-                    fn=view_action_relative,
-                    inputs=[
-                        action_history_index_state,
-                        gr.State(-1),
-                        action_history_state,
-                    ],
-                    outputs=action_hist_view_outputs,
-                )
-                action_next_btn.click(
-                    fn=view_action_relative,
-                    inputs=[
-                        action_history_index_state,
-                        gr.State(1),
-                        action_history_state,
-                    ],
-                    outputs=action_hist_view_outputs,
-                )
-                action_latest_btn.click(
-                    fn=view_latest_action,
-                    inputs=[action_history_state],
-                    outputs=action_hist_view_outputs,
-                )
-
                 # Timer updates the UI based on the *active* agent and handles auto-switch
-                timer = gr.Timer(config.UI_UPDATE_INTERVAL)  # Prevent scroll jump
+                timer = gr.Timer(config.UI_UPDATE_INTERVAL)
                 monitor_timer_outputs = [
                     monitor_current_task,
                     monitor_current_action,
@@ -1814,46 +1883,17 @@ else:
                     monitor_thinking,
                     monitor_log,
                     monitor_memory,
+                    monitor_general_memory_display,
                     monitor_tool_results,
                     monitor_status_bar,
-                    monitor_final_answer,
-                    agent_selector_dropdown,  # Sync dropdown if auto-switched
-                    action_history_state,  # Update history state
+                    agent_selector_dropdown,
+                    full_action_history_state,  # Update full history state for history tab
                 ]
                 timer.tick(
                     fn=update_monitor_ui, inputs=None, outputs=monitor_timer_outputs
                 )
 
-                # Initial History Load for the initially active agent
-                (
-                    initial_hist_index_str,
-                    initial_hist_title,
-                    initial_hist_objective,
-                    initial_hist_think,
-                    initial_hist_log_snippet,
-                    initial_hist_result,
-                ) = view_latest_action(initial_action_history_data)
-                demo.load(
-                    fn=lambda: (
-                        initial_hist_index_str,
-                        initial_hist_title,
-                        initial_hist_objective,
-                        initial_hist_think,
-                        initial_hist_log_snippet,
-                        initial_hist_result,
-                    ),
-                    inputs=[],
-                    outputs=[
-                        action_history_index_state,
-                        action_hist_title,
-                        action_hist_objective,
-                        action_hist_thinking,
-                        action_hist_log,
-                        action_hist_result,
-                    ],
-                )
-
-            # --- Chat Tab ---
+            # Chat Tab (Unchanged)
             with gr.TabItem("Chat"):
                 gr.Markdown(
                     "Interact with the **currently selected agent**. It considers its identity, activity, and your input. Task generation happens *after* the response appears."
@@ -1868,7 +1908,7 @@ else:
                             show_copy_button=True,
                             render=False,
                         )
-                        chat_chatbot.render()  # Render after setting properties
+                        chat_chatbot.render()
                         with gr.Row():
                             chat_task_panel = gr.Textbox(
                                 label="💡 Last Generated Task (Chat)",
@@ -1910,8 +1950,6 @@ else:
                     chat_msg_input,
                     last_generated_task_id_state,
                 ]
-                # Use the generator version for chat_response
-                # Enable queue for chat events to handle concurrent requests better
                 chat_event = chat_send_button.click(
                     fn=chat_response,
                     inputs=[chat_msg_input, chat_chatbot],
@@ -1924,8 +1962,6 @@ else:
                     outputs=chat_outputs,
                     queue=True,
                 )
-                # Make buttons interactive only when input is not empty? (Optional UX)
-
                 prioritize_task_btn.click(
                     fn=prioritize_generated_task,
                     inputs=[last_generated_task_id_state],
@@ -1935,14 +1971,12 @@ else:
                     fn=create_priority_task,
                     inputs=[chat_msg_input],
                     outputs=[chat_interaction_feedback],
-                ).then(
-                    lambda: "", outputs=[chat_msg_input]
-                )  # Clear input after creating task
+                ).then(lambda: "", outputs=[chat_msg_input])
 
-            # --- Agent State Tab ---
+            # Agent State Tab (Unchanged from previous step)
             with gr.TabItem("Agent State"):
                 gr.Markdown(
-                    "View the **currently selected agent's** identity, task queues, and memory. **Use button to load/refresh data.** Click rows in task tables to see full details."
+                    "View the **currently selected agent's** identity, task queues, and memory summary. **Use button to load/refresh data.** Click rows in task tables to see full details. Task-specific memory view available here."
                 )
                 with gr.Row():
                     state_identity = gr.Textbox(
@@ -1966,7 +2000,7 @@ else:
                                 "Depends On",
                                 "Created",
                             ],
-                            interactive=True,  # Allow selection
+                            interactive=True,
                             wrap=True,
                         )
                         gr.Markdown("#### In Progress / Planning Tasks")
@@ -1978,7 +2012,7 @@ else:
                                 "Status",
                                 "Created",
                             ],
-                            interactive=True,  # Allow selection
+                            interactive=True,
                             wrap=True,
                         )
                         gr.Markdown("#### Completed Tasks (Most Recent First)")
@@ -1989,7 +2023,7 @@ else:
                                 "Completed At",
                                 "Result Snippet",
                             ],
-                            interactive=True,  # Allow selection
+                            interactive=True,
                             wrap=True,
                         )
                         gr.Markdown("#### Failed Tasks (Most Recent First)")
@@ -2001,10 +2035,10 @@ else:
                                 "Reason",
                                 "Reattempts",
                             ],
-                            interactive=True,  # Allow selection
+                            interactive=True,
                             wrap=True,
                         )
-                        gr.Markdown("--- \n ### Selected Task Details:")
+                        gr.Markdown("\n ### Selected Task Details:")
                         state_details_display = gr.Markdown(
                             "(Select a row from a task table above to see details)"
                         )
@@ -2014,14 +2048,13 @@ else:
                     )
                     with gr.Column():
                         gr.Markdown("##### Task-Specific Memories")
-                        with gr.Row():  # Removed scale=1
+                        with gr.Row():
                             state_task_memory_select = gr.Dropdown(
-                                label="Select Task ID (Completed/Failed)",
+                                label="Select Task ID (Completed/Failed for Memory View)",
                                 choices=[("Select Task ID...", None)],
                                 value=None,
                                 interactive=True,
                             )
-                        # Removed Row scale=1 around dataframe
                         state_task_memory_display = gr.DataFrame(
                             headers=[
                                 "Relative Time",
@@ -2030,24 +2063,7 @@ else:
                                 "Content Snippet",
                                 "ID",
                             ],
-                            interactive=False,  # Don't need selection here
-                            wrap=True,
-                        )
-                        gr.Markdown("##### General Memories (Recent)")
-                        with gr.Row():  # Removed scale=1
-                            refresh_general_mem_btn = gr.Button(
-                                "🔄 Refresh General Memories"
-                            )
-                        # Removed Row scale=1 around dataframe
-                        state_general_memory_display = gr.DataFrame(
-                            headers=[
-                                "Relative Time",
-                                "Timestamp",
-                                "Type",
-                                "Content Snippet",
-                                "ID",
-                            ],
-                            interactive=False,  # Don't need selection here
+                            interactive=False,
                             wrap=True,
                         )
 
@@ -2060,41 +2076,29 @@ else:
                     state_failed_tasks,
                     state_memory_summary,
                     state_task_memory_select,
-                    state_task_memory_display,  # Keep this for the dropdown output
-                    state_general_memory_display,
+                    state_task_memory_display,
                     pending_tasks_data_state,
                     inprogress_tasks_data_state,
                     completed_tasks_data_state,
                     failed_tasks_data_state,
-                    state_details_display,  # Keep this for the table select output
+                    state_details_display,
                 ]
                 load_state_button.click(
                     fn=refresh_agent_state_display,
                     inputs=None,
                     outputs=state_tab_outputs,
-                    # Add queue=True if state loading takes time
                     queue=True,
                 )
                 state_task_memory_select.change(
                     fn=update_task_memory_display,
                     inputs=[state_task_memory_select],
-                    outputs=[state_task_memory_display],  # Update only task memory df
-                )
-                refresh_general_mem_btn.click(
-                    fn=update_general_memory_display,
-                    inputs=None,
-                    outputs=[
-                        state_general_memory_display
-                    ],  # Update only general memory df
-                    # Add queue=True if memory loading takes time
+                    outputs=[state_task_memory_display],
                     queue=True,
                 )
-                # Connect select events for each task dataframe
+                # Connect select events for each task dataframe (unchanged)
                 state_pending_tasks.select(
                     fn=show_task_details,
-                    inputs=[
-                        pending_tasks_data_state
-                    ],  # Pass the corresponding data state
+                    inputs=[pending_tasks_data_state],
                     outputs=[state_details_display],
                 )
                 state_inprogress_tasks.select(
@@ -2113,8 +2117,156 @@ else:
                     outputs=[state_details_display],
                 )
 
-        # --- Agent Switching Handler ---
-        # Connect dropdown change event to the switch function and update relevant UI parts
+            # Action History Tab <<< MODIFIED >>>
+            with gr.TabItem("Action History"):
+                gr.Markdown(
+                    "Explore the step-by-step action history for the **currently selected agent**. "
+                    "Use the dropdown to filter by Task ID."
+                )
+                with gr.Row():
+                    hist_task_filter_dropdown = gr.Dropdown(
+                        label="Filter by Task",
+                        choices=initial_task_filter_choices,
+                        value="ALL",
+                        interactive=True,
+                        scale=3,  # Give dropdown more space
+                    )
+                    # <<< ADDED Refresh Button >>>
+                    hist_refresh_task_list_btn = gr.Button(
+                        "🔄 Refresh Task List", scale=1, min_width=50
+                    )
+
+                with gr.Row():  # Navigation Buttons Row
+                    hist_prev_step_btn = gr.Button("◀ Previous Step", scale=1)
+                    hist_next_step_btn = gr.Button("Next Step ▶", scale=1)
+
+                hist_title = gr.Markdown(
+                    "**Action Details** (Filter and navigate to view)"
+                )
+                hist_objective = gr.Markdown(
+                    label="Action Objective", value="(No history selected)"
+                )
+
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        gr.Markdown("##### Thinking Process")
+                        hist_thinking = gr.Textbox(
+                            label="Thinking",
+                            lines=15,
+                            interactive=False,
+                            show_copy_button=True,
+                        )
+                        gr.Markdown("##### Log Snippet")
+                        hist_log = gr.Textbox(
+                            label="Log Snippet", lines=5, interactive=False
+                        )
+                    with gr.Column(scale=1):
+                        gr.Markdown("##### LLM Prompt")
+                        hist_llm_prompt = gr.Textbox(
+                            label="LLM Prompt Used",
+                            lines=15,
+                            interactive=False,
+                            show_copy_button=True,
+                        )
+                        gr.Markdown("##### Action & Result")
+                        hist_result = gr.Markdown(
+                            label="Action/Result Summary",
+                            value="(No history selected)",
+                        )
+
+                # Action History Navigation and Filtering
+                hist_view_outputs = [
+                    hist_current_index_state,
+                    hist_title,
+                    hist_objective,
+                    hist_thinking,
+                    hist_llm_prompt,  # Added prompt output
+                    hist_log,
+                    hist_result,
+                    hist_filtered_action_data_state,  # Update filtered data state
+                ]
+
+                # Refresh Task Filter Button Click <<< NEW >>>
+                hist_refresh_task_list_btn.click(
+                    fn=update_history_task_filter_choices,
+                    inputs=None,
+                    outputs=[hist_task_filter_dropdown],
+                    queue=True,  # Refreshing might involve agent calls
+                )
+
+                # Filter Dropdown Change
+                hist_task_filter_dropdown.change(
+                    fn=filter_and_get_action_details,
+                    inputs=[
+                        hist_task_filter_dropdown,
+                        gr.State(str(0)),  # Reset index to 0 on filter change
+                        gr.State(0),  # Delta 0 to just get the first item
+                        full_action_history_state,
+                    ],
+                    outputs=hist_view_outputs,
+                    queue=True,
+                )
+
+                # Navigation Button Clicks
+                hist_prev_step_btn.click(
+                    fn=filter_and_get_action_details,
+                    inputs=[
+                        hist_task_filter_dropdown,
+                        hist_current_index_state,
+                        gr.State(-1),
+                        full_action_history_state,
+                    ],
+                    outputs=hist_view_outputs,
+                )
+                hist_next_step_btn.click(
+                    fn=filter_and_get_action_details,
+                    inputs=[
+                        hist_task_filter_dropdown,
+                        hist_current_index_state,
+                        gr.State(1),
+                        full_action_history_state,
+                    ],
+                    outputs=hist_view_outputs,
+                )
+
+                # Function to load the initial/latest history view for the selected task
+                def load_initial_history_view(task_id, full_history):
+                    # Find the latest index for the filtered history
+                    if task_id == "ALL" or not task_id:
+                        filtered_hist = full_history
+                    else:
+                        filtered_hist = [
+                            item
+                            for item in full_history
+                            if item.get("task_id") == task_id
+                        ]
+
+                    latest_index = len(filtered_hist) - 1 if filtered_hist else 0
+
+                    return filter_and_get_action_details(
+                        selected_task_id=task_id,
+                        current_index_str=str(
+                            latest_index
+                        ),  # Go to latest index for this filter
+                        delta=0,
+                        full_history_data=full_history,
+                    )
+
+                # Load initial view when the tab becomes visible or agent changes (chained later)
+                # Connect the dropdown update and refresh button to trigger initial load
+                hist_refresh_task_list_btn.click(
+                    fn=load_initial_history_view,
+                    inputs=[hist_task_filter_dropdown, full_action_history_state],
+                    outputs=hist_view_outputs,
+                )
+                # Also trigger on initial demo load
+                demo.load(
+                    fn=load_initial_history_view,
+                    inputs=[gr.State("ALL"), full_action_history_state],
+                    outputs=hist_view_outputs,
+                )
+
+        # Agent Switching Handler <<< MODIFIED >>>
         agent_selector_dropdown.change(
             fn=switch_active_agent,
             inputs=[agent_selector_dropdown],
@@ -2122,15 +2274,26 @@ else:
                 monitor_status_bar,
                 agent_switch_feedback,
             ],
-        ).then(  # Chain a .then() to force refresh of other UI elements after switch
-            fn=update_monitor_ui,  # Call the main update function
+        ).then(  # Refresh Monitor Tab
+            fn=update_monitor_ui,
             inputs=None,
-            outputs=monitor_timer_outputs,  # Update all monitor outputs
-        ).then(  # Also refresh state tab elements (primarily identity and dropdown)
+            outputs=monitor_timer_outputs,
+        ).then(  # Refresh State Tab
             fn=refresh_agent_state_display,
             inputs=None,
-            outputs=state_tab_outputs,  # Update state tab outputs
-        ).then(  # And clear chat
+            outputs=state_tab_outputs,
+            queue=True,
+        ).then(  # Refresh History Tab Filter Choices
+            fn=update_history_task_filter_choices,
+            inputs=None,
+            outputs=[hist_task_filter_dropdown],
+        ).then(  # Reset History View after filter update & switch
+            fn=lambda: filter_and_get_action_details(
+                "ALL", "0", 0, []
+            ),  # Reset to show 'no data' for 'ALL' tasks
+            inputs=None,
+            outputs=hist_view_outputs,
+        ).then(  # Clear Chat
             fn=lambda: (
                 [],
                 "(Memory cleared on agent switch)",
@@ -2149,7 +2312,7 @@ else:
 # Add print statement right after defining UI
 print("DEBUG: Gradio UI definition complete.", file=original_stderr)
 
-# --- Launch App ---
+# Launch App (Unchanged)
 if __name__ == "__main__":
     if initialization_success and agents:
         print(
@@ -2159,26 +2322,20 @@ if __name__ == "__main__":
         log.info("Launching Gradio App Interface...")
         try:
             log.info("Starting Gradio server...")
-            # --- REMOVED .queue() from demo launch ---
-            # queue=True is still recommended for event handlers like button clicks
-            # but removing it from the main launch might help with startup issues.
             demo.launch(server_name="0.0.0.0", server_port=7860, share=False)
             print(
                 "DEBUG: demo.launch() returned (Gradio server stopped).",
                 file=original_stderr,
             )
-            # Gradio launch blocks here until interrupted (e.g., Ctrl+C)
             log.info("Gradio App Interface exited normally.")
 
         except KeyboardInterrupt:
             log.info("Gradio launch interrupted by KeyboardInterrupt (Ctrl+C).")
         except Exception as e:
             log.critical(f"Gradio launch failed: {e}", exc_info=True)
-            print(
-                f"FATAL: Gradio launch failed: {e}", file=original_stderr
-            )  # Print error clearly
+            print(f"FATAL: Gradio launch failed: {e}", file=original_stderr)
         finally:
-            # --- Shutdown Sequence ---
+            # Shutdown Sequence
             log.info("Initiating shutdown sequence...")
             app_shutdown_requested.set()
 
@@ -2187,7 +2344,6 @@ if __name__ == "__main__":
             for agent_id, agent in agents.items():
                 if agent:
                     log.info(f"Requesting shutdown for agent '{agent_id}'...")
-                    # Start shutdown in a separate thread to avoid blocking main thread if join hangs
                     thread = threading.Thread(
                         target=agent.shutdown, name=f"Shutdown-{agent_id}"
                     )
@@ -2195,7 +2351,7 @@ if __name__ == "__main__":
                     shutdown_threads.append((agent_id, thread))
 
             # Wait for agent shutdown threads to complete with timeout
-            shutdown_timeout = 15  # seconds
+            shutdown_timeout = 15
             start_time = time.time()
             for agent_id, thread in shutdown_threads:
                 remaining_time = shutdown_timeout - (time.time() - start_time)
@@ -2215,7 +2371,7 @@ if __name__ == "__main__":
                 else:
                     log.info(f"Agent '{agent_id}' shutdown thread joined.")
 
-            save_last_active_agent()  # Save agent ID on clean exit attempt
+            save_last_active_agent()
 
             # Close and remove main log handler
             if main_log_handler:
@@ -2242,24 +2398,20 @@ if __name__ == "__main__":
                     )
 
             log.info("Shutdown sequence complete.")
-            print("\n--- Multi-Agent App End ---", file=original_stdout)  # Use original
+            print("\nMulti-Agent App End", file=original_stdout)
 
     else:
         # Minimal error UI if initialization failed
-        sys.stderr = original_stderr  # Ensure stderr is original
+        sys.stderr = original_stderr
         print(
             "Agent initialization failed. Launching minimal error UI.", file=sys.stderr
         )
-        log.critical(
-            "Agent initialization failed. Launching minimal error UI."
-        )  # Log it too
+        log.critical("Agent initialization failed. Launching minimal error UI.")
         try:
-            # Use the already defined 'demo' variable if it exists and is the error UI
             if "demo" in locals() and isinstance(demo, gr.Blocks):
                 log.info("Launching pre-defined error UI.")
-                # REMOVED .queue() here too for consistency
                 demo.launch(server_name="0.0.0.0", server_port=7860, share=False)
-            else:  # Otherwise define it here
+            else:
                 log.info("Defining and launching minimal error UI.")
                 with gr.Blocks() as error_demo:
                     gr.Markdown(
@@ -2271,12 +2423,10 @@ if __name__ == "__main__":
                         lines=20,
                         interactive=False,
                     )
-                # REMOVED .queue() here too for consistency
                 error_demo.launch(server_name="0.0.0.0", server_port=7860, share=False)
         except Exception as e:
             log.critical(f"Gradio error UI launch failed: {e}", exc_info=True)
             print(f"\nFATAL: Gradio error UI launch also failed: {e}", file=sys.stderr)
-            # Attempt to close handlers if they exist
             if main_log_handler:
                 try:
                     main_log_handler.close()

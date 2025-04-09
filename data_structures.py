@@ -27,12 +27,12 @@ class Task:
         self.result = None  # Store final answer or outcome
         self.reflections = None  # Store LLM reflections on task execution
 
-        # --- Task Planning Fields ---
+        # Task Planning Fields
         self.plan: Optional[List[str]] = None  # The generated list of steps
         self.current_step_index: int = 0  # Index of the next step to execute (0-based)
         self.cumulative_findings: str = ""  # Summary of results from completed steps
 
-        # --- NEW Field for Task Re-attempts ---
+        # NEW Field for Task Re-attempts
         self.reattempt_count: int = (
             0  # Number of times this task has been fully restarted
         )
@@ -52,7 +52,7 @@ class Task:
             "plan": self.plan,
             "current_step_index": self.current_step_index,
             "cumulative_findings": self.cumulative_findings,
-            "reattempt_count": self.reattempt_count,  # <<<--- Serialize new field
+            "reattempt_count": self.reattempt_count,  # <<<Serialize new field
         }
 
     @classmethod
@@ -75,6 +75,6 @@ class Task:
         task.cumulative_findings = data.get("cumulative_findings", "")
         task.reattempt_count = data.get(
             "reattempt_count", 0
-        )  # <<<--- Deserialize new field (default 0)
+        )  # <<<Deserialize new field (default 0)
 
         return task

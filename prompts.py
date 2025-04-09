@@ -3,10 +3,10 @@
 Stores the multi-line LLM prompts used by the AutonomousAgent.
 """
 
-# --- Identity Revision Prompt ---
+# Identity Revision Prompt
 # Called only after task completion/failure interval is met
 REVISE_IDENTITY_PROMPT = """
-You are an autonomous agent reflecting on your identity. Your goal is to revise your personal identity statement based on your recent experiences, task outcomes, and purpose.
+You are reflecting on your identity. Your goal is to revise your personal identity statement based on your recent experiences, task outcomes, and purpose.
 
 **Current Identity Statement:**
 {identity_statement}
@@ -33,12 +33,12 @@ You are an autonomous agent reflecting on your identity. Your goal is to revise 
 **Format:** Output *only* the revised identity statement text, starting with "I am..." or similar.
 """
 
-# --- Task Planning Prompt (Remains generic, plan is for guidance) ---
+# Task Planning Prompt (Remains generic, plan is for guidance)
 # Variables: {identity_statement}, {task_description}, {tool_desc}, {max_steps}, {lessons_learned_context}
 GENERATE_TASK_PLAN_PROMPT = """
-You are the planning component of an autonomous autonomous agent. Your goal is to break down the given Overall Task into a sequence of concrete, actionable steps that the agent can execute using its available tools, considering past failures on this task if available. This plan serves as guidance for the agent's thinking process.
+You are the planning component of an autonomous agent. Your goal is to break down the given Overall Task into a sequence of concrete, actionable steps that the agent can execute using its available tools, considering past failures on this task if available. This plan serves as guidance for the agent's thinking process.
 
-**Your Current Identity:**
+**Agent's Current Identity:**
 {identity_statement}
 
 **Available Tools & Actions:**
@@ -68,11 +68,11 @@ Analyze "Input Task Description" and devise a step-by-step plan to achieve it. T
 """
 
 
-# --- General Thinking/Action Prompt V2 (Generic) ---
+# General Thinking/Action Prompt V2 (Generic)
 # Variables: {identity_statement}, {task_description}, {plan_context},
 #            {cumulative_findings}, {tool_desc}, {memory_context_str}
 GENERATE_THINKING_PROMPT_BASE_V2 = """
-You are an autonomous autonomous agent working towards completing an overall task.
+You are working towards completing an overall task.
 
 **Your Identity:**
 {identity_statement}
@@ -95,7 +95,7 @@ Your goal is to decide the single best action *right now* to make progress towar
 """
 # Dynamic sections appended in agent.py: USER SUGGESTION, User Provided Info, Last Results
 
-# --- Thinking Task Now Prompt V2 (Generic) ---
+# Thinking Task Now Prompt V2 (Generic)
 # Variables: {task_reattempt_count}
 GENERATE_THINKING_TASK_NOW_PROMPT_V2 = """**Your Task Now (Current Task Attempt {task_reattempt_count}):**
 1.  **Analyze:** Review ALL provided info (Identity, **Overall Task**, Intended Plan (if any), **Findings**, Tools, Memories (inc. lessons learned if any), User Info/Suggestion, Last Result).
@@ -106,7 +106,7 @@ GENERATE_THINKING_TASK_NOW_PROMPT_V2 = """**Your Task Now (Current Task Attempt 
     *   Use `final_answer` ONLY if you judge the **Overall Task** to be complete based on **Cumulative Findings**, or if wrapping up due to suggestion is appropriate.
     *   Otherwise, use `use_tool` to take the next logical action towards the goal.
 
-**Output Format (Strict JSON-like structure):**
+**Output Format:**
 THINKING:
 <Reasoning: Analysis of overall goal vs findings, consideration of plan/lessons/memory, user input handling, file organization thoughts, action choice.>
 NEXT_ACTION: <"use_tool" or "final_answer">
@@ -120,9 +120,9 @@ REFLECTIONS: <Optional.>
 **Formatting Reminders:** Start with "THINKING:". Exact structure. Valid JSON for `PARAMETERS`. Include "action" key for web/memory/file. Use `{{}}` for 'status'.
 """
 
-# --- Task Summarization Prompt (Generic) ---
+# Task Summarization Prompt (Generic)
 SUMMARIZE_TASK_PROMPT = """
-Summarize the execution of this agent task based on the cumulative findings from all its steps. Focus on the objective, key actions/findings, errors encountered (if any), and the final outcome ({task_status}).
+Summarize the execution of this task based on the cumulative findings gathered from all steps. Focus on the objective, key actions/findings, errors encountered (if any), and the final outcome (task status - {task_status}).
 
 **Input Data (Cumulative Findings from Task Steps):**
 {summary_context}
@@ -131,10 +131,10 @@ Summarize the execution of this agent task based on the cumulative findings from
 """
 
 
-# --- New Task Generation Prompt (Standard - Generic) ---
+# New Task Generation Prompt (Standard - Generic)
 # Called when agent is idle or after chat interaction if warranted
 GENERATE_NEW_TASKS_PROMPT = """
-You are the planning component of an autonomous agent. Your role is to generate new, actionable tasks based on the agent's state, history, identity, and the immediate context.
+You are the planning component of an autonomous agent. Please generate new, actionable tasks based on the agent's state, history, identity, and the immediate context.
 
 **Agent's Identity:**
 {identity_statement}
@@ -176,7 +176,7 @@ You are the planning component of an autonomous agent. Your role is to generate 
 ```
 """
 
-# --- Agent-Specific Initial Creative Task Generation Prompts ---
+# Agent-Specific Initial Creative Task Generation Prompts
 
 # Agent 01: Audrey (Economics/Canada Focus)
 INITIAL_CREATIVE_TASK_GENERATION_PROMPT_AGENT_01 = """
@@ -290,7 +290,7 @@ Generate up to **{max_new_tasks}** diverse, creative, and engaging initial tasks
 """
 
 
-# --- Session Reflection Prompt (Generic) ---
+# Session Reflection Prompt (Generic)
 SESSION_REFLECTION_PROMPT = """
 You are an autonomous agent, with the following identity "{identity_statement}".
 
@@ -314,7 +314,7 @@ Reflect on your work session.
 6. Improvements?
 """
 
-# --- Memory Re-ranking Prompt (Generic) ---
+# Memory Re-ranking Prompt (Generic)
 RERANK_MEMORIES_PROMPT = """
 You are helping an autonomous agent select the MOST useful memories for its current step. Goal: Choose the best memories to help the agent achieve its immediate goal, considering relevance and avoiding redundancy.
 
@@ -344,7 +344,7 @@ You are helping an autonomous agent select the MOST useful memories for its curr
 **Output Format:** Provide *only* a comma-separated list of the numerical indices (starting from 0) of the {n_final} most relevant memories, ordered from most relevant to least relevant. Example: 3, 0, 7, 5
 """
 
-# --- Lesson Learned Prompt V2 (Generic) ---
+# Lesson Learned Prompt V2 (Generic)
 # Variables: {task_description}, {plan_context}, {failed_action_context},
 #            {error_message}, {error_subtype}, {cumulative_findings}, {identity_statement}
 LESSON_LEARNED_PROMPT_V2 = """
@@ -374,7 +374,7 @@ Message: {error_message}
 **Guidelines:**
 *   Be specific and actionable.
 *   Focus on what *can be changed* (e.g., "Verify URL exists before browsing", "Ensure filename parameter is sanitized and includes a subdirectory for the shared workspace", "Try smaller chunk size for large files", "Use memory search if web search fails repeatedly").
-*   Keep it brief (1-2 sentences).
+*   Keep it brief (2-3 sentences).
 *   Frame it as a general principle if possible, but reference the specific context if needed.
 
 **Output Format:** Provide *only* the lesson learned text.

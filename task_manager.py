@@ -249,7 +249,7 @@ class TaskQueue:
             task.status = "planning"
             task.plan = None
             task.current_step_index = 0
-            task.cumulative_findings += f"\n--- Task Re-attempting (Attempt {task.reattempt_count}) ---\nLesson Learned: {lesson_learned}\n--- Resetting Plan ---\n"
+            task.cumulative_findings += f"\nTask Re-attempting (Attempt {task.reattempt_count})\nLesson Learned: {lesson_learned}\nResetting Plan\n"
             task.completed_at = None
             task.reflections = (
                 task.reflections or ""

@@ -72,7 +72,7 @@ class WebTool(Tool):
         # Headers for search (unchanged)
         self.search_headers = {"Accept": "application/json"}
 
-        # --- Document Archiving Setup (Use shared DB) ---
+        # Document Archiving Setup (Use shared DB)
         self.doc_archive_collection: Optional[chromadb.Collection] = None
         try:
             # Use the utility function which now points to the shared DB path
@@ -97,7 +97,7 @@ class WebTool(Tool):
             is_separator_regex=False,
             separators=["\n\n", "\n", ". ", "? ", "! ", " ", ""],
         )
-        # --- End Document Archiving Setup ---
+        # End Document Archiving Setup
 
     # _get_browse_headers remains unchanged
     def _get_browse_headers(self, url: str) -> Dict[str, str]:
@@ -111,7 +111,7 @@ class WebTool(Tool):
             log.warning(f"Could not parse URL '{url}' to generate Referer header.")
         return headers
 
-    # --- Helper methods for HTML/Text Cleaning (unchanged) ---
+    # Helper methods for HTML/Text Cleaning (unchanged)
     def _clean_text_basic(self, text: str) -> str:
         if not text:
             return ""
@@ -169,7 +169,7 @@ class WebTool(Tool):
         elif tag_name in ["br"]:
             return "\n"
         elif tag_name in ["hr"]:
-            return "---\n\n"
+            return "\n\n"
         elif tag_name in [
             "script",
             "style",
@@ -296,7 +296,7 @@ class WebTool(Tool):
                 )
         return final_text.strip()
 
-    # --- End Helper methods ---
+    # End Helper methods
 
     # _run_search remains unchanged
     def _run_search(self, query: str) -> Dict[str, Any]:
@@ -450,7 +450,7 @@ class WebTool(Tool):
             )
             log.info(f"URL Content-Type detected: '{content_type}' from {final_url}")
 
-            # --- Step 2: Parse content ---
+            # Step 2: Parse content
             if content_type == "application/pdf":
                 content_source = "pdf"
                 log.info("Parsing PDF content...")
@@ -463,7 +463,7 @@ class WebTool(Tool):
                         page = doc.load_page(page_num)
                         page_text = page.get_text("text", sort=True)
                         if page_text:
-                            pdf_texts.append(f"\n--- Page {page_num + 1} ---\n")
+                            pdf_texts.append(f"\n(end of Page {page_num + 1})\n")
                             pdf_texts.append(page_text.strip())
                     doc.close()
                     full_text = "\n".join(pdf_texts).strip()
@@ -541,9 +541,9 @@ class WebTool(Tool):
                         "error": f"Cannot browse: Unsupported content type '{content_type}' and fallback extraction failed.",
                         "query_mode": bool(query),
                     }
-            # --- End Parsing Attempts ---
+            # End Parsing Attempts
 
-            # --- Check extracted text AFTER all parsing attempts ---
+            # Check extracted text AFTER all parsing attempts
             # This block is now correctly positioned outside the 'else' for fallback
             if not extracted_text or not extracted_text.strip():
                 log.warning(
@@ -558,7 +558,7 @@ class WebTool(Tool):
                     "query_mode": bool(query),
                 }
 
-            # --- Step 3: Handle based on query ---
+            # Step 3: Handle based on query
             if query and self.doc_archive_collection:
                 log.info(
                     f"Query provided for {final_url}. Archiving and searching chunks in SHARED DB."
@@ -716,7 +716,7 @@ class WebTool(Tool):
                 )
                 return result
 
-        # --- Step 4: Error Handling (for main try) ---
+        # Step 4: Error Handling (for main try)
         except requests.exceptions.Timeout:
             log.error(f"Request timed out while browsing {url}")
             return {

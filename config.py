@@ -7,12 +7,12 @@ import sys
 print("[CONFIG] Loading environment variables...")
 load_dotenv()
 
-# --- Base Output Folder ---
+# Base Output Folder
 BASE_OUTPUT_FOLDER = os.environ.get("OUTPUT_FOLDER", "./output")
-# --- Log Folder --
+# Log Folder --
 LOG_FOLDER = os.path.join(BASE_OUTPUT_FOLDER, "logs")
 
-# --- Agent Definitions ---
+# Agent Definitions
 # Each agent has an ID, Name, and Initial Identity Statement
 AGENTS = {
     "agent_01": {
@@ -47,7 +47,7 @@ DEFAULT_AGENT_ID = "agent_01"
 AGENT_IDS = list(AGENTS.keys())
 AUTO_SWITCH_TASK_COUNT = 3  # Switch agent after this many completed tasks
 
-# --- Shared Paths ---
+# Shared Paths
 SHARED_ARTIFACT_FOLDER = os.path.abspath(
     os.environ.get(
         "SHARED_ARTIFACT_FOLDER",
@@ -64,7 +64,7 @@ SHARED_DOC_ARCHIVE_DB_PATH = os.path.abspath(
 LAST_ACTIVE_AGENT_FILE = os.path.join(BASE_OUTPUT_FOLDER, "last_active_agent.txt")
 
 
-# --- Agent-Specific Path Functions ---
+# Agent-Specific Path Functions
 def get_agent_output_folder(agent_id: str) -> str:
     return os.path.join(BASE_OUTPUT_FOLDER, agent_id)
 
@@ -89,7 +89,7 @@ def get_agent_qlora_dataset_path(agent_id: str) -> str:
     return os.path.join(get_agent_output_folder(agent_id), "qlora_finetune_data.jsonl")
 
 
-# --- Ollama Configuration ---
+# Ollama Configuration
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_CHAT_MODEL = os.environ.get("OLLAMA_CHAT_MODEL", "gemma3")
 OLLAMA_CHAT_MODEL_REPEAT_PENALTY = float(
@@ -104,11 +104,11 @@ OLLAMA_CHAT_MODEL_MIN_P = float(os.environ.get("OLLAMA_CHAT_MODEL_MIN_P", 0.01))
 OLLAMA_EMBED_MODEL = os.environ.get("OLLAMA_EMBED_MODEL", "nomic-embed-text")
 OLLAMA_TIMEOUT = int(os.environ.get("OLLAMA_TIMEOUT", 180))
 
-# --- SearXNG Configuration ---
+# SearXNG Configuration
 SEARXNG_BASE_URL = os.environ.get("SEARXNG_BASE_URL", "http://localhost:8080")
 SEARXNG_TIMEOUT = int(os.environ.get("SEARXNG_TIMEOUT", 20))
 
-# --- Database Configuration ---
+# Database Configuration
 MEMORY_COLLECTION_NAME = os.environ.get(
     "MEMORY_COLLECTION_NAME", "agent_memory"
 )  # Per-agent memory collection name
@@ -119,12 +119,12 @@ DOC_ARCHIVE_CHUNK_SIZE = int(os.environ.get("DOC_ARCHIVE_CHUNK_SIZE", 5000))
 DOC_ARCHIVE_CHUNK_OVERLAP = int(os.environ.get("DOC_ARCHIVE_CHUNK_OVERLAP", 150))
 DOC_ARCHIVE_QUERY_RESULTS = int(os.environ.get("DOC_ARCHIVE_QUERY_RESULTS", 5))
 
-# --- Task Queue Configuration (Path generated per agent) ---
+# Task Queue Configuration (Path generated per agent)
 TASK_MAX_REATTEMPT = int(
     os.environ.get("TASK_MAX_REATTEMPT", 3)
 )  # Max full task restarts
 
-# --- Agent Configuration ---
+# Agent Configuration
 CHARACTERS_PER_TOKEN = 3
 MAX_CHARACTERS_CUMULATIVE_FINDINGS = int(
     os.environ.get("MAX_CHARACTERS_CUMULATIVE_FINDINGS", 90000)
@@ -146,6 +146,7 @@ MAX_TOOL_CONTENT_RESULTS = 5000  # must be less than MAX_CHARACTER_SUMMARY
 assert MAX_TOOL_CONTENT_RESULTS < MAX_CHARACTER_SUMMARY
 MAX_MEMORY_PARAMS_SNIPPETS = 1000
 MAX_MEMORY_SUMMARY_SNIPPETS = 5000
+MAX_MEMORY_CONTENT_SNIPPETS = 1000
 AGENT_MAX_STEP_RETRIES = int(
     os.environ.get("AGENT_MAX_STEP_RETRIES", 2)
 )  # Renamed to action retries later
@@ -154,9 +155,9 @@ MAX_STEPS_GENERAL_THINKING = int(
 )  # Used for planning step limit
 IDENTITY_REVISION_TASK_INTERVAL = int(
     os.environ.get("IDENTITY_REVISION_TASK_INTERVAL", 6)
-)  # <<<--- ADDED
+)  # <<<ADDED
 
-# --- Memory Management Configuration ---
+# Memory Management Configuration
 ENABLE_MEMORY_SUMMARIZATION = (
     os.environ.get("ENABLE_MEMORY_SUMMARIZATION", "True").lower() == "true"
 )
@@ -164,7 +165,7 @@ DELETE_MEMORIES_AFTER_SUMMARY = (
     os.environ.get("DELETE_MEMORIES_AFTER_SUMMARY", "True").lower() == "true"
 )
 
-# --- Memory Retrival counts ---
+# Memory Retrival counts
 MEMORY_COUNT_NEW_TASKS = int(os.environ.get("MEMORY_COUNT_NEW_TASKS", 10))
 MEMORY_COUNT_IDENTITY_REVISION = int(
     os.environ.get("MEMORY_COUNT_IDENTITY_REVISION", 10)
@@ -174,23 +175,23 @@ MEMORY_COUNT_REFLECTIONS = int(os.environ.get("MEMORY_COUNT_REFLECTIONS", 5))
 MEMORY_COUNT_CHAT_RESPONSE = int(os.environ.get("MEMORY_COUNT_CHAT_RESPONSE", 5))
 MEMORY_COUNT_PLANNING = int(os.environ.get("MEMORY_COUNT_PLANNING", 5))
 
-# --- Identity Configuration (Initial statements defined in AGENTS dict) ---
+# Identity Configuration (Initial statements defined in AGENTS dict)
 INITIAL_NEW_TASK_N = int(
     os.environ.get("INITIAL_NEW_TASK_N", 6)
 )  # Max new tasks to generate at once
 
-# --- UI Configuration ---
+# UI Configuration
 UI_STEP_HISTORY_LENGTH = int(
     os.environ.get("UI_STEP_HISTORY_LENGTH", 10)
 )  # Renamed to action history later
 UI_UPDATE_INTERVAL = float(os.environ.get("UI_UPDATE_INTERVAL", 0.5))
 UI_LOG_MAX_LENGTH = int(os.environ.get("UI_LOG_MAX_LENGTH", 50000))
 
-# --- Logging Configuration ---
+# Logging Configuration
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 
 
-# --- Create Folders on Load ---
+# Create Folders on Load
 def ensure_folders_exist():
     created_folders = []
     try:
@@ -251,4 +252,4 @@ print(f"  SHARED_DOC_ARCHIVE_DB_PATH={SHARED_DOC_ARCHIVE_DB_PATH}")
 print(f"  AUTO_SWITCH_TASK_COUNT={AUTO_SWITCH_TASK_COUNT}")
 print(
     f"  IDENTITY_REVISION_TASK_INTERVAL={IDENTITY_REVISION_TASK_INTERVAL}"
-)  # <<<--- ADDED PRINT
+)  # <<<ADDED PRINT

@@ -11,7 +11,7 @@ import threading  # Keep standard import
 from typing import List, Dict, Any, Optional, Tuple
 from collections import Counter, deque
 
-# --- Project Imports ---
+# Project Imports
 import config
 from data_structures import Task
 from task_manager import TaskQueue
@@ -28,7 +28,7 @@ from utils import (
 )
 import chromadb
 
-# --- Logging Setup ---
+# Logging Setup
 import logging
 
 # Agent-specific loggers will inherit from root logger configured in app_ui
@@ -104,7 +104,7 @@ class AutonomousAgent:
         self._is_running = threading.Event()
         self._shutdown_request = threading.Event()
         self._agent_thread: Optional[threading.Thread] = None
-        # --- USE RLock for reentrant locking ---
+        # USE RLock for reentrant locking
         self._state_lock = threading.RLock()
 
         # Initialize session state with defaults before loading
@@ -117,16 +117,16 @@ class AutonomousAgent:
             "identity_statement": self.identity_statement,
             "user_suggestion_move_on_pending": False,
             "last_action_details": deque(maxlen=config.UI_STEP_HISTORY_LENGTH),
-            "tasks_since_last_revision": 0,  # <<<--- ADDED state variable
+            "tasks_since_last_revision": 0,
         }
         log.info(f"{self.log_prefix} Loading session state...")
         self.load_session_state()  # Load agent-specific state
 
-        # UI State (Reflects this agent's status)
+        # UI State (Reflects this agent's status) - Initialize with placeholders
         self._ui_update_state: Dict[str, Any] = {
             "agent_id": self.agent_id,
             "agent_name": self.agent_name,
-            "status": "paused",  # Default to paused on init
+            "status": "paused",
             "log": f"{self.log_prefix} Agent initialized, paused.",
             "current_task_id": self.session_state.get("current_task_id"),
             "current_task_desc": "N/A",
@@ -137,15 +137,17 @@ class AutonomousAgent:
             "last_action_type": None,
             "last_tool_results": None,
             "recent_memories": [],
+            "recent_general_memories": [],  # <<< ADDED general memories to UI state
             "last_web_content": self.session_state.get(
                 "last_web_browse_content", "(None)"
             ),
-            "final_answer": None,
+            # "final_answer": None, # <<< REMOVED final answer from UI state
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "action_history": list(self.session_state.get("last_action_details", [])),
         }
 
         self._refresh_ui_task_details()  # Populate task details if loaded
+        self._refresh_ui_general_memories()  # <<< ADDED initial load of general memories
 
         log.info(f"{self.log_prefix} Agent Initialized Successfully.")
 
@@ -178,11 +180,23 @@ class AutonomousAgent:
             self._ui_update_state["current_action_desc"] = "N/A"
             self._ui_update_state["current_plan"] = "N/A"
 
-    # _revise_identity_statement <<< MODIFIED >>>
+    # <<< NEW >>> Refreshes general memories in UI state
+    def _refresh_ui_general_memories(self):
+        try:
+            # Fetch formatted general memories directly (using the agent's existing method)
+            general_memories = self.get_formatted_general_memories()
+            self._ui_update_state["recent_general_memories"] = general_memories
+        except Exception as e:
+            log.error(
+                f"{self.log_prefix} Failed to get general memories for UI update: {e}"
+            )
+            self._ui_update_state["recent_general_memories"] = []
+
+    # _revise_identity_statement remains the same
     def _revise_identity_statement(self, reason: str):
         log.info(f"{self.log_prefix} Revising identity statement. Reason: {reason}")
 
-        # --- Gather Context ---
+        # Gather Context
         # 1. Memories
         mem_query = f"Recent task summaries, self-reflections, session reflections, errors, key accomplishments, or notable interactions relevant to understanding my evolution, capabilities, and purpose. Focus on the last {config.IDENTITY_REVISION_TASK_INTERVAL} completed/failed tasks."
         log.info(f"{self.log_prefix} Retrieving memories for identity revision...")
@@ -259,7 +273,7 @@ class AutonomousAgent:
             else "  None recently finished."
         )
 
-        # --- Call LLM for Revision ---
+        # Call LLM for Revision
         prompt = prompts.REVISE_IDENTITY_PROMPT.format(
             identity_statement=self.identity_statement,
             reason=reason,
@@ -274,7 +288,7 @@ class AutonomousAgent:
             prompt, self.ollama_chat_model, self.ollama_base_url, timeout=150
         )
 
-        # --- Process Revision ---
+        # Process Revision
         if (
             revised_statement_text
             and revised_statement_text.strip()
@@ -329,7 +343,7 @@ class AutonomousAgent:
                     f"{self.log_prefix} Agent not running/paused, skipping memory add for failed identity revision."
                 )
 
-    # _update_ui_state remains the same
+    # _update_ui_state <<< MODIFIED >>>: Refresh task details *and* general memories
     def _update_ui_state(self, **kwargs):
         # Always acquire lock when updating shared UI state dict
         with self._state_lock:  # RLock handles reentrancy
@@ -344,19 +358,23 @@ class AutonomousAgent:
             )
             # Refresh task details based on potentially updated task ID/state
             self._refresh_ui_task_details()
+            # Refresh general memories
+            self._refresh_ui_general_memories()
 
-    # get_ui_update_state remains the same
+    # get_ui_update_state <<< MODIFIED >>>: Refresh general memories before return
     def get_ui_update_state(self) -> Dict[str, Any]:
         with self._state_lock:  # Acquire lock for reading shared state (RLock)
             # Always refresh task details before returning
             self._refresh_ui_task_details()
+            # Always refresh general memories before returning <<< MODIFIED >>>
+            self._refresh_ui_general_memories()
             # Ensure agent ID and name are present
             self._ui_update_state["agent_id"] = self.agent_id
             self._ui_update_state["agent_name"] = self.agent_name
             # Return a copy to prevent modification outside the lock
             return self._ui_update_state.copy()
 
-    # load_session_state uses agent-specific path, logs agent ID <<< MODIFIED >>>
+    # load_session_state remains the same
     def load_session_state(self):
         if os.path.exists(self.session_state_path):
             try:
@@ -447,7 +465,7 @@ class AutonomousAgent:
                     )
                     log.info(
                         f"{self.log_prefix}   Tasks Since Last Revision: {self.session_state.get('tasks_since_last_revision', 0)}"
-                    )  # <<< Log loaded value
+                    )
                     log.info(
                         f"{self.log_prefix}   Loaded {len(self.session_state['last_action_details'])} action history entries."
                     )
@@ -514,7 +532,7 @@ class AutonomousAgent:
             )
             self.session_state.setdefault("tasks_since_last_revision", 0)  # <<< Default
 
-    # save_session_state uses agent-specific path, logs agent ID <<< MODIFIED >>>
+    # save_session_state remains the same
     def save_session_state(self):
         # Save should be relatively quick file IO, but acquire lock for consistency
         with self._state_lock:  # RLock
@@ -548,7 +566,7 @@ class AutonomousAgent:
                     exc_info=True,
                 )
 
-    # handle_user_suggestion_move_on remains the same logic, logs agent ID
+    # handle_user_suggestion_move_on remains the same
     def handle_user_suggestion_move_on(self) -> str:
         feedback = f"{self.log_prefix} Suggestion ignored: Agent not initialized."
         current_task_id = self.session_state.get("current_task_id")
@@ -622,7 +640,7 @@ class AutonomousAgent:
             Task(description, priority, depends_on=depends_on)
         )
 
-    # get_available_tools_description updates file tool path example
+    # get_available_tools_description remains the same
     def get_available_tools_description(self) -> str:
         if not self.tools:
             return "No tools available."
@@ -679,7 +697,7 @@ class AutonomousAgent:
             return "No tools currently active or available (check configuration and initialization)."
         return "\n".join(active_tools_desc)
 
-    # _generate_task_plan remains the same logic, logs agent ID
+    # _generate_task_plan remains the same
     def _generate_task_plan(self, task: Task) -> bool:
         log.info(
             f"{self.log_prefix} Generating execution plan for task {task.id[:8]} (Attempt: {task.reattempt_count + 1})..."
@@ -804,7 +822,9 @@ class AutonomousAgent:
 
             task.plan = plan_steps
             if task.reattempt_count > 0:
-                task.cumulative_findings += f"\n--- Generated New Plan (Attempt {task.reattempt_count + 1}) ---\n"
+                task.cumulative_findings += (
+                    f"\nGenerated New Plan (Attempt {task.reattempt_count + 1})\n"
+                )
             else:
                 task.cumulative_findings = "Plan generated. Starting execution.\n"
             task.current_step_index = 0
@@ -816,13 +836,15 @@ class AutonomousAgent:
             task.plan = None
             return False
 
-    # generate_thinking remains the same (includes detailed tool results)
+    # generate_thinking <<< MODIFIED >>>: Saves the full prompt text for history
     def generate_thinking(
         self,
         task: Task,
         tool_results: Optional[Dict[str, Any]] = None,
         user_suggested_move_on: bool = False,
-    ) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+    ) -> Tuple[
+        Optional[str], Optional[Dict[str, Any]], Optional[str]
+    ]:  # Added prompt text output
         plan_context = "(No plan generated)"
         if task.plan:
             plan_context = "**Intended Plan (Guidance Only):**\n" + "\n".join(
@@ -835,7 +857,7 @@ class AutonomousAgent:
         )
         tool_desc = self.get_available_tools_description()
 
-        # --- Memory Retrieval ---
+        # Memory Retrieval
         memory_context_str = "No relevant memories selected."
         user_provided_info_str = None
         try:
@@ -872,7 +894,12 @@ class AutonomousAgent:
                 self.memory.retrieve_and_rerank_memories(
                     query=memory_query,
                     task_description=f"Working on Task: {task.description}",
-                    context=f"Cumulative Findings:\n{cumulative_findings[-500:]}\nIntended Plan:\n{plan_context[:500]}",
+                    context=(
+                        f"Cumulative Findings:\n...{cumulative_findings[-500:]}\n\n"
+                        + plan_context[:500]
+                        if ("Intended Plan" in plan_context)
+                        else "Intended Plan:\n" + plan_context[:500]
+                    ),
                     identity_statement=self.identity_statement,
                     n_results=config.MEMORY_COUNT_GENERAL_THINKING * 2,
                     n_final=config.MEMORY_COUNT_GENERAL_THINKING,
@@ -905,7 +932,7 @@ class AutonomousAgent:
             if other_memories_context_list:
                 memory_context_str = "\n\n".join(other_memories_context_list)
             if user_provided_info_content:
-                user_provided_info_str = "\n---\n".join(user_provided_info_content)
+                user_provided_info_str = "\n,\n".join(user_provided_info_content)
 
         except Exception as mem_err:
             log.error(
@@ -913,7 +940,7 @@ class AutonomousAgent:
                 exc_info=True,
             )
             memory_context_str = "Error retrieving memories."
-        # --- End Memory Retrieval ---
+        # End Memory Retrieval
 
         prompt_vars = {
             "identity_statement": self.identity_statement,
@@ -932,7 +959,7 @@ class AutonomousAgent:
         if user_provided_info_str:
             prompt_text += f"\n\n**User Provided Information (Consider for next action):**\n{user_provided_info_str}\n"
 
-        # --- Format last tool results (if any) ---
+        # Format last tool results (if any)
         if tool_results:
             tool_name = tool_results.get("tool_name", "Unknown")
             tool_action = tool_results.get("action", "unknown")
@@ -983,7 +1010,7 @@ class AutonomousAgent:
                                 ]
                                 result_context = (
                                     f"Focused Browse on {url_browsed}:\n"
-                                    + "\n---\n".join(formatted_list)
+                                    + "\n,\n".join(formatted_list)
                                 )
                             else:
                                 result_context = f"Focused Browse on {url_browsed}: No relevant snippets found for query '{query_used}'."
@@ -1080,30 +1107,40 @@ class AutonomousAgent:
                 prompt_text += f"\n**Results from Last Action:**\nTool: {tool_name} (Action: {tool_action})\nStatus: {tool_status}{error_info}\nResult: (Error formatting details)\n"
         else:
             prompt_text += "\n**Results from Last Action:**\nNone.\n"
-        # --- End Tool Result Formatting ---
+        # End Tool Result Formatting
 
         prompt_text += prompts.GENERATE_THINKING_TASK_NOW_PROMPT_V2.format(
             task_reattempt_count=task.reattempt_count + 1
         )
 
+        # <<< SAVE FULL PROMPT TEXT >>>
+        full_prompt_for_history = prompt_text
+
         log.info(
             f"{self.log_prefix} Asking {self.ollama_chat_model} for next action (Task {task.id[:8]}, Attempt {task.reattempt_count + 1})..."
         )
         llm_response_text = call_ollama_api(
-            prompt_text, self.ollama_chat_model, self.ollama_base_url, timeout=180
+            prompt=full_prompt_for_history,  # Use the saved full prompt
+            model=self.ollama_chat_model,
+            base_url=self.ollama_base_url,
+            timeout=180,
         )
 
         if llm_response_text is None:
             log.error(
                 f"{self.log_prefix} Failed to get thinking response from Ollama for task {task.id[:8]}."
             )
-            return "LLM communication failed.", {
-                "type": "error",
-                "message": "LLM communication failure (thinking).",
-                "subtype": "llm_comm_error",
-            }
+            return (
+                "LLM communication failed.",
+                {
+                    "type": "error",
+                    "message": "LLM communication failure (thinking).",
+                    "subtype": "llm_comm_error",
+                },
+                full_prompt_for_history,
+            )  # Return prompt even on failure
 
-        # --- Parsing Logic ---
+        # Parsing Logic
         try:
             action: Dict[str, Any] = {"type": "unknown"}
             raw_thinking = llm_response_text  # Default thinking is full response
@@ -1142,11 +1179,15 @@ class AutonomousAgent:
                 )
                 # Try to guess action based on keywords if marker missing? Risky.
                 # Let's return error for now.
-                return raw_thinking, {
-                    "type": "error",
-                    "message": "Missing or misplaced NEXT_ACTION marker.",
-                    "subtype": "parse_error",
-                }
+                return (
+                    raw_thinking,
+                    {
+                        "type": "error",
+                        "message": "Missing or misplaced NEXT_ACTION marker.",
+                        "subtype": "parse_error",
+                    },
+                    full_prompt_for_history,
+                )
 
             action_type_str = action_match.group(1).strip().lower()
 
@@ -1178,11 +1219,15 @@ class AutonomousAgent:
                             f"{self.log_prefix} Inferred tool name 'status' due to lack of other markers."
                         )
                     else:
-                        return raw_thinking, {
-                            "type": "error",
-                            "message": "Missing or misplaced TOOL marker for use_tool action.",
-                            "subtype": "parse_error",
-                        }
+                        return (
+                            raw_thinking,
+                            {
+                                "type": "error",
+                                "message": "Missing or misplaced TOOL marker for use_tool action.",
+                                "subtype": "parse_error",
+                            },
+                            full_prompt_for_history,
+                        )
 
                 if params_match:
                     raw_params = params_match.group(1).strip()
@@ -1255,36 +1300,52 @@ class AutonomousAgent:
                                     except json.JSONDecodeError as e3:
                                         err_msg = f"Invalid JSON in PARAMETERS after all attempts: {e3}. Original: '{raw_params}'"
                                         log.error(f"{self.log_prefix} {err_msg}")
-                                        return raw_thinking, {
-                                            "type": "error",
-                                            "message": err_msg,
-                                            "subtype": "parse_error",
-                                        }
+                                        return (
+                                            raw_thinking,
+                                            {
+                                                "type": "error",
+                                                "message": err_msg,
+                                                "subtype": "parse_error",
+                                            },
+                                            full_prompt_for_history,
+                                        )
                                 else:
                                     err_msg = f"Invalid JSON in PARAMETERS, no clear object found. Parse error: {e2}. Original: '{raw_params}'"
                                     log.error(f"{self.log_prefix} {err_msg}")
-                                    return raw_thinking, {
-                                        "type": "error",
-                                        "message": err_msg,
-                                        "subtype": "parse_error",
-                                    }
+                                    return (
+                                        raw_thinking,
+                                        {
+                                            "type": "error",
+                                            "message": err_msg,
+                                            "subtype": "parse_error",
+                                        },
+                                        full_prompt_for_history,
+                                    )
                     else:  # Empty params block but not status tool
-                        return raw_thinking, {
-                            "type": "error",
-                            "message": "Empty PARAMETERS block for non-status tool.",
-                            "subtype": "parse_error",
-                        }
+                        return (
+                            raw_thinking,
+                            {
+                                "type": "error",
+                                "message": "Empty PARAMETERS block for non-status tool.",
+                                "subtype": "parse_error",
+                            },
+                            full_prompt_for_history,
+                        )
 
                 elif tool_name != "status":  # Params marker missing for non-status tool
-                    return raw_thinking, {
-                        "type": "error",
-                        "message": "Missing PARAMETERS marker for use_tool action.",
-                        "subtype": "parse_error",
-                    }
+                    return (
+                        raw_thinking,
+                        {
+                            "type": "error",
+                            "message": "Missing PARAMETERS marker for use_tool action.",
+                            "subtype": "parse_error",
+                        },
+                        full_prompt_for_history,
+                    )
                 else:  # Status tool, no params needed
                     params_json = {}
 
-                # --- Parameter Validation ---
+                # Parameter Validation
                 if (
                     action.get("type") != "error" and params_json is not None
                 ):  # Check params_json is not None
@@ -1465,11 +1526,15 @@ class AutonomousAgent:
                         log.error(
                             f"{self.log_prefix} LLM chose final_answer but provided no ANSWER marker or subsequent content."
                         )
-                        return raw_thinking, {
-                            "type": "error",
-                            "message": "Missing ANSWER content for final_answer.",
-                            "subtype": "parse_error",
-                        }
+                        return (
+                            raw_thinking,
+                            {
+                                "type": "error",
+                                "message": "Missing ANSWER content for final_answer.",
+                                "subtype": "parse_error",
+                            },
+                            full_prompt_for_history,
+                        )
 
                 if reflections_match:
                     reflections = reflections_match.group(1).strip()
@@ -1478,11 +1543,15 @@ class AutonomousAgent:
                 action["reflections"] = reflections
 
                 if not answer:  # Double check after potential fallback
-                    return raw_thinking, {
-                        "type": "error",
-                        "message": "Missing ANSWER content for final_answer.",
-                        "subtype": "parse_error",
-                    }
+                    return (
+                        raw_thinking,
+                        {
+                            "type": "error",
+                            "message": "Missing ANSWER content for final_answer.",
+                            "subtype": "parse_error",
+                        },
+                        full_prompt_for_history,
+                    )
                 elif (
                     len(answer) < 50
                     and re.search(
@@ -1518,20 +1587,24 @@ class AutonomousAgent:
                     "subtype": "parse_error",
                 }
 
-            return raw_thinking, action
+            return raw_thinking, action, full_prompt_for_history
 
         except Exception as e:
             log.exception(
                 f"{self.log_prefix} CRITICAL failure parsing LLM thinking response: {e}\nResponse:\n{llm_response_text}"
             )
             # Return raw thinking (if any) and an internal error
-            return raw_thinking or "Error during parsing.", {
-                "type": "error",
-                "message": f"Internal error parsing LLM response: {e}",
-                "subtype": "internal_error",
-            }
+            return (
+                raw_thinking or "Error during parsing.",
+                {
+                    "type": "error",
+                    "message": f"Internal error parsing LLM response: {e}",
+                    "subtype": "internal_error",
+                },
+                full_prompt_for_history,
+            )
 
-    # execute_tool remains the same logic, logs agent ID
+    # execute_tool remains the same
     def execute_tool(
         self, tool_name: str, parameters: Dict[str, Any]
     ) -> Dict[str, Any]:
@@ -1594,7 +1667,7 @@ class AutonomousAgent:
                 f"{self.log_prefix} Tool '{tool_name}' action '{log_action_display}' finished in {duration:.2f}s."
             )
 
-            # --- State updates after tool execution ---
+            # State updates after tool execution
             # Update last_web_browse_content based on result
             if (
                 tool_name == "web"
@@ -1619,9 +1692,9 @@ class AutonomousAgent:
                         self.session_state["last_web_browse_content"] = result.get(
                             "message", result.get("error", "(Browse result unclear)")
                         )
-            # --- End state updates ---
+            # End state updates
 
-            # --- Result Processing & Robustness Checks ---
+            # Result Processing & Robustness Checks
             if not isinstance(result, dict):
                 log.warning(
                     f"{self.log_prefix} Result from '{tool_name}' ({log_action_display}) not a dict: {type(result)}. Wrapping."
@@ -1698,7 +1771,7 @@ class AutonomousAgent:
                 "status": "failed",
             }
 
-    # _save_qlora_datapoint uses agent-specific path
+    # _save_qlora_datapoint remains the same
     def _save_qlora_datapoint(
         self, source_type: str, instruction: str, input_context: str, output: str
     ):
@@ -1725,7 +1798,7 @@ class AutonomousAgent:
         except Exception as e:
             log.exception(f"{self.log_prefix} Failed to save QLoRA datapoint: {e}")
 
-    # _summarize_and_prune_task_memories remains the same logic, logs agent ID
+    # _summarize_and_prune_task_memories remains the same
     def _summarize_and_prune_task_memories(self, task: Task):
         if not config.ENABLE_MEMORY_SUMMARIZATION:
             log.debug(
@@ -1902,7 +1975,7 @@ class AutonomousAgent:
                 f"{self.log_prefix} No original action memories found eligible for pruning for task {task.id[:8]} (kept types: {len(task_memories)})."
             )
 
-    # _reflect_on_error_and_prepare_reattempt remains the same logic, logs agent ID
+    # _reflect_on_error_and_prepare_reattempt remains the same
     def _reflect_on_error_and_prepare_reattempt(
         self,
         task: Task,
@@ -1975,11 +2048,11 @@ class AutonomousAgent:
             )
             return False
 
-    # _perform_action_cycle remains the same logic, logs agent ID
+    # _perform_action_cycle <<< MODIFIED >>>: Saves prompt, modifies final answer handling
     def _perform_action_cycle(self, task: Task) -> Dict[str, Any]:
         cycle_start_time = time.time()
         action_log = []
-        final_answer_text = None
+        # final_answer_text = None # <<< REMOVED >>> Final answer goes to history now
         cycle_status = "processing"  # Possible outcomes: processing, completed, failed, error_retry, error_reattempting_task
         task_status_updated_this_cycle = False  # Track if task queue was updated
         current_retries = self.session_state.get("current_action_retries", 0)
@@ -1994,6 +2067,7 @@ class AutonomousAgent:
 
         tool_results_for_ui = None  # Store raw tool output for UI
         thinking_to_store = "(No thinking process recorded for this cycle)"
+        prompt_for_history = "(LLM prompt not recorded for this cycle)"  # <<< ADDED >>>
         action_type = "internal"  # Default action type
         action_objective = f"Make progress on task: {task.description[:60]}..."
         cycle_num_display = task.current_step_index + 1  # Cycle number (1-based)
@@ -2006,6 +2080,7 @@ class AutonomousAgent:
             "task_attempt": task.reattempt_count + 1,
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "thinking": thinking_to_store,
+            "llm_prompt": prompt_for_history,  # <<< ADDED >>>
             "action_type": action_type,
             "action_params": None,
             "result_status": None,
@@ -2016,7 +2091,7 @@ class AutonomousAgent:
         task.current_step_index += 1  # Increment step index *before* execution
 
         action_log.append(
-            f"--- Task '{task.id[:8]}' | Action Cycle {cycle_num_display} (Retry {current_retries}/{config.AGENT_MAX_STEP_RETRIES}, Task Attempt {task.reattempt_count + 1}/{config.TASK_MAX_REATTEMPT}) ---"
+            f"* Task '{task.id[:8]}' | Action Cycle {cycle_num_display} (Retry {current_retries}/{config.AGENT_MAX_STEP_RETRIES}, Task Attempt {task.reattempt_count + 1}/{config.TASK_MAX_REATTEMPT})."
         )
         action_log.append(f"Task Goal: {task.description}")
         if user_suggested_move_on:
@@ -2029,20 +2104,29 @@ class AutonomousAgent:
             f"{self.log_prefix} Executing action cycle {cycle_num_display} for task {task.id[:8]} (Action Retry: {current_retries}, Task Attempt: {task.reattempt_count + 1})"
         )
 
-        # --- Generate Thinking and Action ---
+        # Generate Thinking and Action
         # Use last cycle's tool results (stored in UI state) as input
         last_tool_results = self._ui_update_state.get("last_tool_results")
-        raw_thinking, action = self.generate_thinking(
-            task=task,
-            tool_results=last_tool_results,
-            user_suggested_move_on=user_suggested_move_on,
+        raw_thinking, action, thinking_prompt = (
+            self.generate_thinking(  # <<< MODIFIED call >>>
+                task=task,
+                tool_results=last_tool_results,
+                user_suggested_move_on=user_suggested_move_on,
+            )
         )
         action_type = action.get("type", "error")
         action_message = action.get("message", "Unknown error from thinking step")
         action_subtype = action.get("subtype", "unknown_error")
         thinking_to_store = raw_thinking or "Thinking process not extracted."
+        prompt_for_history = (
+            thinking_prompt or "(Prompt generation failed)"
+        )  # <<< SAVE PROMPT >>>
+
         action_log.append(f"Thinking:\n{thinking_to_store}")
         action_details_for_history["thinking"] = thinking_to_store
+        action_details_for_history["llm_prompt"] = (
+            prompt_for_history  # <<< ADD PROMPT TO HISTORY >>>
+        )
         action_details_for_history["action_type"] = action_type
         action_details_for_history["action_objective"] = (
             f"Cycle {cycle_num_display} thinking towards: {task.description[:60]}..."
@@ -2066,16 +2150,16 @@ class AutonomousAgent:
 
         cycle_finding = ""  # Accumulate findings text for this cycle
 
-        # --- Handle Action ---
+        # Handle Action
         if action_type == "error":
-            # --- Handle LLM Action Error ---
+            # Handle LLM Action Error
             log.error(
                 f"{self.log_prefix} [ACTION ERROR] LLM Action Error (Task {task.id[:8]}, Cycle {cycle_num_display}, Attempt {task.reattempt_count+1}): {action_message} (Subtype: {action_subtype})"
             )
             action_log.append(
                 f"[ERROR] Action Error: {action_message} (Type: {action_subtype})"
             )
-            cycle_finding = f"\n--- Action Cycle {cycle_num_display} Error (Action Retry {current_retries+1}, Task Attempt {task.reattempt_count+1}): LLM Action Error - {action_message} (Type: {action_subtype}) ---\n"
+            cycle_finding = f"\n* Action Cycle {cycle_num_display} Error (Action Retry {current_retries+1}, Task Attempt {task.reattempt_count+1}): LLM Action Error - {action_message} (Type: {action_subtype}).\n"
             task.cumulative_findings += cycle_finding
 
             # Add error memory
@@ -2127,7 +2211,7 @@ class AutonomousAgent:
                         )
                         fail_reason = f"Failed during action cycle {cycle_num_display} Attempt {task.reattempt_count+1}. Max action retries ({config.AGENT_MAX_STEP_RETRIES}) + Failed to reset task state."
                         task.reflections = fail_reason
-                        task.cumulative_findings += f"\n--- Task Failed: Max action retries & reset failure on cycle {cycle_num_display}. ---\n"
+                        task.cumulative_findings += f"\nTask Failed: Max action retries & reset failure on cycle {cycle_num_display}.\n"
                         self.task_queue.update_task(
                             task.id, "failed", reflections=fail_reason
                         )
@@ -2140,7 +2224,7 @@ class AutonomousAgent:
                     )
                     fail_reason = f"Failed during action cycle {cycle_num_display}. Max action retries ({config.AGENT_MAX_STEP_RETRIES}) and max task reattempts ({config.TASK_MAX_REATTEMPT}) reached. Last error: {action_message}"
                     task.reflections = fail_reason
-                    task.cumulative_findings += f"\n--- Task Failed Permanently: Max action and task retries reached on cycle {cycle_num_display}. ---\n"
+                    task.cumulative_findings += f"\nTask Failed Permanently: Max action and task retries reached on cycle {cycle_num_display}.\n"
                     self.task_queue.update_task(
                         task.id, "failed", reflections=fail_reason
                     )
@@ -2149,7 +2233,7 @@ class AutonomousAgent:
                     cycle_status = "failed"
 
         elif action_type == "use_tool":
-            # --- Handle Tool Use ---
+            # Handle Tool Use
             tool_name = action.get("tool")
             params = action.get("parameters")
             # Determine display action name (handle status tool)
@@ -2184,7 +2268,7 @@ class AutonomousAgent:
 
             action_details_for_history["result_status"] = tool_status
 
-            # --- Generate Result Summary for History and Findings ---
+            # Generate Result Summary for History and Findings
             result_display_str = "(Error summarizing result)"
             summary_limit = (
                 config.MAX_CHARACTER_SUMMARY
@@ -2275,16 +2359,16 @@ class AutonomousAgent:
             )
             if tool_error:  # Prepend error to history summary if tool failed
                 result_summary_for_history = (
-                    f"Error: {tool_error}\n---\n{result_summary_for_history}"[
+                    f"Error: {tool_error}\n\n{result_summary_for_history}"[
                         :summary_limit
                     ]
                     + ("..." if len(result_summary_for_history) > summary_limit else "")
                 )
             action_details_for_history["result_summary"] = result_summary_for_history
-            # --- End Result Summary ---
+            # End Result Summary
 
             # Add cycle finding
-            cycle_finding = f"\n--- Action Cycle {cycle_num_display} (Tool: {tool_name}/{tool_action_from_result}, Attempt {task.reattempt_count+1}) ---\nStatus: {tool_status}\nResult Summary: {result_summary_for_history}\n---\n"
+            cycle_finding = f"\n* Action Cycle {cycle_num_display} (Tool: {tool_name}/{tool_action_from_result}, Attempt {task.reattempt_count+1})\nStatus: {tool_status}\nResult Summary: {result_summary_for_history}.\n"
             task.cumulative_findings += cycle_finding
 
             # Add tool result memory
@@ -2347,7 +2431,7 @@ class AutonomousAgent:
                 )
 
                 # Add specific error finding
-                error_finding = f"\n--- Action Cycle {cycle_num_display} Error (Action Retry {current_retries+1}, Task Attempt {task.reattempt_count+1}): Tool Error - Tool={tool_name}, Action={tool_action_from_result}, Error={tool_error} ---\n"
+                error_finding = f"\n* Action Cycle {cycle_num_display} Error (Action Retry {current_retries+1}, Task Attempt {task.reattempt_count+1}): Tool Error - Tool={tool_name}, Action={tool_action_from_result}, Error={tool_error}.\n"
                 task.cumulative_findings += error_finding
 
                 # Add error memory
@@ -2400,7 +2484,7 @@ class AutonomousAgent:
                             )
                             fail_reason = f"Failed during action cycle {cycle_num_display} Attempt {task.reattempt_count+1} (Tool Error: {tool_error}). Max action retries + Failed to reset task state."
                             task.reflections = fail_reason
-                            task.cumulative_findings += f"\n--- Task Failed: Max action retries & reset failure on cycle {cycle_num_display}. ---\n"
+                            task.cumulative_findings += f"\nTask Failed: Max action retries & reset failure on cycle {cycle_num_display}.\n"
                             self.task_queue.update_task(
                                 task.id, "failed", reflections=fail_reason
                             )
@@ -2413,7 +2497,7 @@ class AutonomousAgent:
                         )
                         fail_reason = f"Failed during action cycle {cycle_num_display}. Max action retries and max task reattempts reached. Last error (Tool: {tool_name}): {tool_error}"
                         task.reflections = fail_reason
-                        task.cumulative_findings += f"\n--- Task Failed Permanently: Max action and task retries reached on cycle {cycle_num_display}. ---\n"
+                        task.cumulative_findings += f"\nTask Failed Permanently: Max action and task retries reached on cycle {cycle_num_display}.\n"
                         self.task_queue.update_task(
                             task.id, "failed", reflections=fail_reason
                         )
@@ -2429,14 +2513,14 @@ class AutonomousAgent:
                 )
                 fail_reason = f"Failed during action cycle {cycle_num_display} Attempt {task.reattempt_count+1} due to unknown tool status '{tool_status}' from tool {tool_name}."
                 task.reflections = fail_reason
-                task.cumulative_findings += f"\n--- Task Failed: Unknown tool status '{tool_status}' in cycle {cycle_num_display}. ---\n"
+                task.cumulative_findings += f"\nTask Failed: Unknown tool status '{tool_status}' in cycle {cycle_num_display}.\n"
                 self.task_queue.update_task(task.id, "failed", reflections=fail_reason)
                 task.status = "failed"
                 task_status_updated_this_cycle = True
                 cycle_status = "failed"
 
         elif action_type == "final_answer":
-            # --- Handle Final Answer ---
+            # Handle Final Answer
             log.info(
                 f"{self.log_prefix} [ACTION] Cycle {cycle_num_display}: Provide Final Answer (Attempt {task.reattempt_count+1})."
             )
@@ -2463,20 +2547,27 @@ class AutonomousAgent:
                     )  # Use a retry slot
 
             else:  # Valid answer provided
-                final_answer_text = answer  # Store for UI update
+                # final_answer_text = answer # <<< REMOVED >>>
                 action_details_for_history["result_status"] = "completed"
-                summary_limit = 500  # Define limit for history summary
-                action_details_for_history["result_summary"] = (
-                    f"Final Answer Provided:\n{answer[:summary_limit]}"
-                    + ("..." if len(answer) > summary_limit else "")
+                summary_limit = (
+                    1000  # Increase limit for history summary on final answer
                 )
+                final_answer_summary = f"**Final Answer Provided:**\n{answer}\n"
+                if reflections:
+                    final_answer_summary += f"\n**Reflections:**\n{reflections}\n"
+
+                action_details_for_history["result_summary"] = final_answer_summary[
+                    :summary_limit
+                ] + ("..." if len(final_answer_summary) > summary_limit else "")
 
                 log.info(
                     f" FINAL ANSWER (Agent: {self.agent_id}, Task: {task.id[:8]}) "
                     + f"\n{answer}\n"
                 )  # Adjusted separator length
 
-                cycle_finding = f"\n--- Action Cycle {cycle_num_display}: Final Answer Provided (Attempt {task.reattempt_count+1}) ---\n{answer[:500]}...\n---\n"
+                cycle_finding = f"\n* Action Cycle {cycle_num_display}: Final Answer Provided (Attempt {task.reattempt_count+1})\n{answer[:500]}...\n"
+                if reflections:
+                    cycle_finding += f"Reflections: {reflections[:200]}...\n"
                 task.cumulative_findings += cycle_finding
 
                 result_payload = {
@@ -2533,7 +2624,7 @@ class AutonomousAgent:
                 # Summarize and prune memories for completed task
                 self._summarize_and_prune_task_memories(task)
 
-        # --- Post-Action Cycle Updates ---
+        # Post-Action Cycle Updates
         cycle_duration = time.time() - cycle_start_time
         action_log.append(
             f"Action Cycle {cycle_num_display} duration: {cycle_duration:.2f}s. Cycle Outcome: {cycle_status}"
@@ -2591,7 +2682,7 @@ class AutonomousAgent:
         # Save session state changes (retries, current task ID, revision counter etc.)
         self.save_session_state()
 
-        # --- Prepare UI Update Data ---
+        # Prepare UI Update Data
         # Get potentially updated task status for UI display
         final_task_status_obj = self.task_queue.get_task(task.id)
         final_task_status_for_ui = (
@@ -2613,11 +2704,11 @@ class AutonomousAgent:
             except Exception as e:
                 log.error(f"{self.log_prefix} Failed to get dependent tasks: {e}")
 
-        # Get recent memories for UI display (best effort)
-        recent_memories_for_ui = []
+        # Get recent TASK-SPECIFIC memories for UI display (best effort)
+        recent_task_memories_for_ui = []
         try:
             ui_memory_query = f"Memories relevant to outcome '{cycle_status}' of action cycle {cycle_num_display} for task {task.id[:8]} (Attempt {task.reattempt_count+1}). Last Action: {action_type}."
-            recent_memories_for_ui, _ = self.memory.retrieve_and_rerank_memories(
+            recent_task_memories_for_ui, _ = self.memory.retrieve_and_rerank_memories(
                 query=ui_memory_query,
                 task_description=task.description,
                 context=task.cumulative_findings[-1000:],
@@ -2626,10 +2717,11 @@ class AutonomousAgent:
             )
         except Exception as e:
             log.error(
-                f"{self.log_prefix} Failed to get recent memories for UI update: {e}"
+                f"{self.log_prefix} Failed to get recent task-specific memories for UI update: {e}"
             )
 
         # Update internal UI state dictionary (uses lock)
+        # Note: _update_ui_state now also refreshes general memories
         self._update_ui_state(
             status=final_task_status_for_ui,  # Use status from potentially updated task obj
             log="\n".join(action_log),  # Full log for this cycle
@@ -2637,18 +2729,18 @@ class AutonomousAgent:
             dependent_tasks=dependent_tasks_list,
             last_action_type=action_type,
             last_tool_results=tool_results_for_ui,  # Store raw output for next cycle
-            recent_memories=recent_memories_for_ui,
+            recent_memories=recent_task_memories_for_ui,  # Task-specific memories
             # Fetch latest web content from locked session state
             last_web_content=self.session_state.get(
                 "last_web_browse_content", "(No recent web browse)"
             ),
-            final_answer=final_answer_text,  # Display final answer if generated
+            # final_answer=final_answer_text, # <<< REMOVED >>>
         )
 
         # Return the latest full UI state for this agent
         return self.get_ui_update_state()
 
-    # _handle_task_completion_or_failure <<< MODIFIED >>>
+    # _handle_task_completion_or_failure remains the same
     def _handle_task_completion_or_failure(self, task: Task):
         """Handles post-task actions: increments counter, triggers identity revision if interval met."""
         log.info(
@@ -2703,7 +2795,7 @@ class AutonomousAgent:
                 f"{self.log_prefix} Agent paused or shutting down, skipping identity revision check after {task.status} task."
             )
 
-    # process_one_step remains the same logic, logs agent ID
+    # process_one_step remains the same
     def process_one_step(self) -> Dict[str, Any]:
         log.info(f"{self.log_prefix} Processing one agent cycle...")
         cycle_result_log = [f"{self.log_prefix} Attempting one cycle..."]
@@ -2711,7 +2803,7 @@ class AutonomousAgent:
         current_ui_state = self.get_ui_update_state()
 
         try:
-            # --- Check ChromaDB Connection ---
+            # Check ChromaDB Connection
             # Added this check earlier in the cycle
             try:
                 db_count = self.memory.collection.count()
@@ -2728,7 +2820,7 @@ class AutonomousAgent:
                 )
                 self.pause_autonomous_loop()  # Pause agent on critical error
                 return self.get_ui_update_state()
-            # --- End DB Check ---
+            # End DB Check
 
             task_id_to_process = self.session_state.get("current_task_id")
             task: Optional[Task] = None
@@ -2984,7 +3076,7 @@ class AutonomousAgent:
                 return self.get_ui_update_state()
 
         except Exception as e:
-            # --- Critical Error Handling for the entire cycle ---
+            # Critical Error Handling for the entire cycle
             log.exception(
                 f"{self.log_prefix} CRITICAL Error during process_one_step loop"
             )
@@ -3037,7 +3129,7 @@ class AutonomousAgent:
             self.pause_autonomous_loop()
             return self.get_ui_update_state()
 
-    # generate_new_tasks uses agent-specific initial prompt, logs agent ID
+    # generate_new_tasks remains the same
     def generate_new_tasks(
         self,
         max_new_tasks: int = 3,
@@ -3046,7 +3138,7 @@ class AutonomousAgent:
         trigger_context: str = "unknown",
     ) -> Optional[str]:
         log.info(
-            f"{self.log_prefix} --- Attempting to Generate New Tasks (Trigger: {trigger_context}) ---"
+            f"{self.log_prefix} Attempting to Generate New Tasks (Trigger: {trigger_context})"
         )
         memory_is_empty = False
         memory_count = 0
@@ -3202,7 +3294,7 @@ class AutonomousAgent:
                 ),
             }
 
-        # --- Call LLM for Task Generation ---
+        # Call LLM for Task Generation
         try:
             # Ensure all expected keys are present before formatting
             required_keys = [
@@ -3240,7 +3332,7 @@ class AutonomousAgent:
             log.error(f"{self.log_prefix} LLM failed task gen.")
             return None
 
-        # --- Parse and Add Tasks ---
+        # Parse and Add Tasks
         first_task_desc_added = None
         new_tasks_added = 0
         try:
@@ -3317,7 +3409,7 @@ class AutonomousAgent:
 
                 except json.JSONDecodeError as final_e:
                     log.error(
-                        f"{self.log_prefix} Failed JSON parse task gen after all attempts: {final_e}\nLLM Resp:\n{llm_response}\n---"
+                        f"{self.log_prefix} Failed JSON parse task gen after all attempts: {final_e}\nLLM Resp:\n{llm_response}\n"
                     )
                     return None  # Give up if all parsing fails
 
@@ -3338,7 +3430,7 @@ class AutonomousAgent:
                 f"{self.log_prefix} LLM suggested {len(suggested_tasks)} tasks. Validating..."
             )
 
-            # --- Validation and Adding Logic ---
+            # Validation and Adding Logic
             current_task_ids_in_batch = set()
             # Get fresh task info for duplicate check
             existing_tasks_info = [
@@ -3447,7 +3539,7 @@ class AutonomousAgent:
         )
         return first_task_desc_added
 
-    # _autonomous_loop runs for this specific agent instance
+    # _autonomous_loop remains the same
     def _autonomous_loop(self, initial_delay: float = 1.0, step_delay: float = 3.0):
         """The main autonomous execution loop running in a separate thread."""
         log.info(f"{self.log_prefix} Background agent loop starting.")
@@ -3467,7 +3559,7 @@ class AutonomousAgent:
                 time.sleep(1)  # Sleep longer while paused
                 continue
 
-            # --- Agent is running ---
+            # Agent is running
             log.debug(f"{self.log_prefix} Autonomous loop: Starting cycle...")
             step_start = time.monotonic()
             cycle_outcome_status = "unknown"
@@ -3517,7 +3609,7 @@ class AutonomousAgent:
                     f"{self.log_prefix} Agent paused or shutdown requested during delay calculation, skipping sleep."
                 )
 
-        # --- End of Loop ---
+        # End of Loop
         log.info(
             f"{self.log_prefix} Background agent loop exiting due to shutdown request."
         )
@@ -3526,7 +3618,7 @@ class AutonomousAgent:
             status="shutdown", log=f"{self.log_prefix} Agent loop stopped."
         )
 
-    # start/pause/shutdown operate on this specific agent instance
+    # start/pause/shutdown remain the same
     def start_autonomous_loop(self):
         """Starts or resumes the agent's autonomous execution loop thread."""
         if self._agent_thread and self._agent_thread.is_alive():
@@ -3614,7 +3706,7 @@ class AutonomousAgent:
         self.save_session_state()
         log.info(f"{self.log_prefix} Agent shutdown complete.")
 
-    # add_self_reflection remains the same logic, logs agent ID
+    # add_self_reflection remains the same
     def add_self_reflection(
         self, reflection: str, reflection_type: str = "self_reflection"
     ):
@@ -3649,7 +3741,7 @@ class AutonomousAgent:
             )
             return None
 
-    # generate_and_add_session_reflection remains the same logic, logs agent ID
+    # generate_and_add_session_reflection remains the same
     def generate_and_add_session_reflection(
         self,
         start: datetime.datetime,
@@ -3700,15 +3792,13 @@ class AutonomousAgent:
             prompt, self.ollama_chat_model, self.ollama_base_url, timeout=120
         )
         if reflection and reflection.strip():
-            print(
-                f"\n--- Session Reflection ({self.agent_id}) ---\n{reflection}\n------"
-            )
+            print(f"\nSession Reflection ({self.agent_id})\n{reflection}\n.")
             # Use the dedicated method to add reflection
             self.add_self_reflection(reflection, "session_reflection")
         else:
             log.warning(f"{self.log_prefix} Failed to generate session reflection.")
 
-    # get_agent_dashboard_state remains the same logic, logs agent ID
+    # get_agent_dashboard_state <<< MODIFIED >>>: Removed general memory fetching
     def get_agent_dashboard_state(self) -> Dict[str, Any]:
         log.debug(f"{self.log_prefix} Gathering dashboard state...")
         try:
@@ -3752,6 +3842,18 @@ class AutonomousAgent:
                 in_progress_planning_tasks, key=lambda t: t.get("Created", "")
             )
 
+            # <<< REMOVED general memory fetching here >>>
+
+            # Get all task objects for the history filter dropdown
+            all_tasks_list = list(self.task_queue.tasks.values())
+            all_tasks_list_sorted = sorted(
+                all_tasks_list, key=lambda t: t.created_at, reverse=True
+            )
+            all_tasks_for_filter = [
+                {"id": t.id, "description": t.description, "status": t.status}
+                for t in all_tasks_list_sorted
+            ]
+
             return {
                 "agent_id": self.agent_id,
                 "agent_name": self.agent_name,
@@ -3762,6 +3864,7 @@ class AutonomousAgent:
                 "failed_tasks": tasks_structured.get("failed", []),
                 "completed_failed_tasks_data": completed_failed_tasks,  # Combined sorted list for dropdown
                 "memory_summary": memory_summary_str,
+                "all_tasks_for_filter": all_tasks_for_filter,  # <<< ADDED >>>
                 "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             }
         except Exception as e:
@@ -3775,11 +3878,12 @@ class AutonomousAgent:
                 "completed_tasks": [],
                 "failed_tasks": [],
                 "completed_failed_tasks_data": [],
+                "all_tasks_for_filter": [],  # <<< ADDED >>>
                 "memory_summary": f"Error: {e}",
                 "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             }
 
-    # get_formatted_memories_for_task remains the same logic, logs agent ID
+    # get_formatted_memories_for_task remains the same
     def get_formatted_memories_for_task(self, task_id: str) -> List[Dict[str, Any]]:
         if not task_id:
             return []
@@ -3814,7 +3918,7 @@ class AutonomousAgent:
         # Sort by timestamp ascending
         return sorted(formatted, key=lambda x: x.get("Timestamp", "0"))
 
-    # get_formatted_general_memories remains the same logic, logs agent ID
+    # get_formatted_general_memories remains the same
     def get_formatted_general_memories(self) -> List[Dict[str, Any]]:
         log.debug(f"{self.log_prefix} Getting general memories...")
         try:
