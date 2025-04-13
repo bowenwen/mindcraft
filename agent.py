@@ -853,7 +853,7 @@ class AutonomousAgent:
         cumulative_findings = (
             task.cumulative_findings.strip()
             if task.cumulative_findings and task.cumulative_findings.strip()
-            else "(No findings yet)"
+            else ""
         )
         tool_desc = self.get_available_tools_description()
 
@@ -882,9 +882,9 @@ class AutonomousAgent:
                     f"Tool: {tool_name}/{tool_action}, Status: {tool_status}"
                 )
                 if tool_error:
-                    tool_result_summary += f", Error: {str(tool_error)[:50]}..."
+                    tool_result_summary += f", Error: {str(tool_error)[:500]}..."
                 elif isinstance(result_payload, dict) and result_payload.get("message"):
-                    tool_result_summary += f", Msg: {result_payload['message'][:50]}..."
+                    tool_result_summary += f", Msg: {result_payload['message'][:500]}..."
                 tool_result_summary += archive_info
 
                 memory_query += f"\nLast result summary: {tool_result_summary}"
@@ -1055,20 +1055,21 @@ class AutonomousAgent:
                         dirs = result_payload.get("directories", [])
                         result_context = f"Directory Listing for '{dir_path}':\nFiles ({len(files)}): {files}\nDirectories ({len(dirs)}): {dirs}"
                     elif tool_action == "read":
-                        file_path = result_payload.get("filepath", "N/A")
+                        message = result_payload.get("message")
                         content = result_payload.get("content")
                         truncated = result_payload.get("truncated", False)
-                        result_context = f"Read file '{file_path}':\n"
+                        result_context = f"{message}'. File Content:\n"
                         result_context += (
                             content if content else "(No content or file empty)"
                         )
                         if truncated:
                             result_context += "...\n"  # use ... to indicate that content was truncated
                     elif tool_action == "write":
-                        file_path = result_payload.get("filepath", "N/A")
-                        archived = result_payload.get("archived_filepath")
-                        result_context = f"Wrote file '{file_path}'." + (
-                            f" Archived previous version." if archived else ""
+                        message = result_payload.get("message")
+                        content = result_payload.get("content")
+                        result_context = f"{message}'. File Content:\n"
+                        result_context += (
+                            content if content else "(No content or file empty)"
                         )
                 elif tool_name == "status":
                     result_context = result_payload.get(
@@ -2278,9 +2279,11 @@ class AutonomousAgent:
             )  # Limit content results from tool use, should be less than summary_limit
             try:
                 if isinstance(result_content, dict):
+                    # initalize result_content with message
                     if "message" in result_content:
-                        result_display_str = result_content["message"]
-                    elif (
+                        result_display_str = f"{result_content['message']}\n"
+                    # append content result from specific tools
+                    if (
                         tool_name == "file"
                         and tool_action_from_result == "write"
                         and "filepath" in result_content

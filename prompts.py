@@ -108,7 +108,7 @@ GENERATE_THINKING_TASK_NOW_PROMPT_V2 = """**Your Task Now (Current Task Attempt 
 
 **Output Format:**
 THINKING:
-<Reasoning: Analysis of overall goal vs findings, consideration of plan/lessons/memory, user input handling, file organization thoughts, action choice.>
+<Reasoning: Analysis of overall goal vs findings, consideration of plan, lessons, memory, user input handling, file organization thoughts, action choice.>
 NEXT_ACTION: <"use_tool" or "final_answer">
 If NEXT_ACTION is "use_tool":
 TOOL: <tool_name>

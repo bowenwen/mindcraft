@@ -224,6 +224,7 @@ class FileTool(Tool):
                     "message": f"Content written successfully to '{rel_filename}'.{archive_message}",
                     "archived_filepath": archived_filepath_rel,
                     "filepath": rel_filename,
+                    "content": content,
                 }
             else:
                 return {
@@ -231,6 +232,7 @@ class FileTool(Tool):
                     "action": "write",
                     "message": f"Content written successfully to '{rel_filename}'.",
                     "filepath": rel_filename,
+                    "content": content,
                 }
         except IOError as e:
             log.error(f"IOError writing artifact '{full_path}': {e}", exc_info=True)
